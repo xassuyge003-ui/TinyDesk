@@ -111,6 +111,67 @@ marchLeapDay.leapDayPolicy = .march1
 check(marchLeapDay.occurrence(inYear: 2025, calendar: calendar) == date(2025, 3, 1), "非闰年也可选择3月1日")
 check(marchLeapDay.occurs(on: date(2025, 3, 1), calendar: calendar), "日历按规则在3月1日显示闰日事件")
 
+print("Chinese lunar dates")
+let lunarNewYear2025 = ChineseLunarCalendar.occurrence(
+    inLunarYear: 2025,
+    month: 1,
+    day: 1,
+    isLeapMonth: false,
+    leapMonthPolicy: .regularMonthFallback,
+    calendar: calendar
+)
+check(lunarNewYear2025 == date(2025, 1, 29), "农历 2025 年正月初一正确换算为公历日期")
+let lunarNewYearComponents = ChineseLunarCalendar.components(from: date(2025, 1, 29), calendar: calendar)
+check(
+    lunarNewYearComponents == ChineseLunarCalendar.Components(
+        lunarYear: 2025,
+        month: 1,
+        day: 1,
+        isLeapMonth: false
+    ),
+    "公历日期可反查农历年、月、日和闰月标记"
+)
+
+let lunarBirthday = ImportantDateEvent(
+    title: "农历生日",
+    category: .birthday,
+    date: ImportantDateComponents(calendarSystem: .chineseLunar, month: 1, day: 15),
+    recurrence: .yearly,
+    createdAt: now,
+    updatedAt: now
+)
+check(lunarBirthday.occurrence(inYear: 2025, calendar: calendar) == date(2025, 2, 12), "农历生日可计算当年公历发生日")
+check(lunarBirthday.occurs(on: date(2025, 2, 12), calendar: calendar), "农历生日会显示在公历日历正确日期")
+
+if let leapDate = (0..<366)
+    .compactMap({ calendar.date(byAdding: .day, value: $0, to: date(2025, 1, 1)) })
+    .first(where: { ChineseLunarCalendar.components(from: $0, calendar: calendar).isLeapMonth }) {
+    let leapComponents = ChineseLunarCalendar.components(from: leapDate, calendar: calendar)
+    let strictLeapBirthday = ImportantDateEvent(
+        title: "闰月生日",
+        date: ImportantDateComponents(
+            calendarSystem: .chineseLunar,
+            month: leapComponents.month,
+            day: leapComponents.day,
+            isLeapMonth: true
+        ),
+        recurrence: .yearly,
+        lunarLeapMonthPolicy: .strictLeapMonth,
+        createdAt: now,
+        updatedAt: now
+    )
+    check(strictLeapBirthday.occurs(on: leapDate, calendar: calendar), "闰月生日会在实际闰月当天出现")
+
+    var fallbackLeapBirthday = strictLeapBirthday
+    fallbackLeapBirthday.lunarLeapMonthPolicy = .regularMonthFallback
+    let strictOccurrence = strictLeapBirthday.occurrence(inYear: 2026, calendar: calendar)
+    let fallbackOccurrence = fallbackLeapBirthday.occurrence(inYear: 2026, calendar: calendar)
+    check(strictOccurrence == nil, "没有对应闰月时严格规则不会错误补过")
+    check(fallbackOccurrence != nil, "没有对应闰月时默认规则按普通月补过")
+} else {
+    check(false, "测试年份应包含至少一个闰月")
+}
+
 let oneTime = ImportantDateEvent(
     title: "一次事件",
     date: ImportantDateComponents(year: 2026, month: 4, day: 5),
@@ -154,8 +215,29 @@ var sticky = DesktopCard.sticky(now: now)
 sticky.frame = DesktopCardFrame(x: 40, y: 80, width: 320, height: 280, screenIdentifier: "1")
 sticky.surfaceStyle = .opaque
 sticky.isPositionLocked = true
+sticky.isAlwaysOnTop = true
 sticky.noteRichTextData = Data("{\\rtf1 TinyDesk}".utf8)
-let workspace = TinyDeskWorkspace(cards: [sticky, countdown, todo], importantDates: [newYear, birthday, oneTime])
+let linkedSystemDate = ImportantDateEvent(
+    title: "系统日历会议",
+    category: .other,
+    date: ImportantDateComponents(year: 2026, month: 8, day: 3),
+    recurrence: .once,
+    systemCalendarLink: SystemCalendarLink(
+        calendarIdentifier: "system-calendar-id",
+        calendarTitle: "工作",
+        eventIdentifier: "event-id",
+        externalIdentifier: "external-id",
+        authority: .systemCalendar,
+        isReadOnly: true,
+        lastSyncedAt: now
+    ),
+    createdAt: now,
+    updatedAt: now
+)
+let workspace = TinyDeskWorkspace(
+    cards: [sticky, countdown, todo],
+    importantDates: [newYear, birthday, oneTime, linkedSystemDate]
+)
 let encoder = JSONEncoder()
 encoder.dateEncodingStrategy = .iso8601
 let decoder = JSONDecoder()
@@ -166,13 +248,19 @@ check(decoded == workspace, "工作区 JSON 可无损往返")
 check(decoded.cards.first?.frame?.screenIdentifier == "1", "窗口位置和屏幕标识会持久化")
 check(decoded.cards.first?.resolvedSurfaceStyle == .opaque, "背景风格会持久化")
 check(decoded.cards.first?.resolvedIsPositionLocked == true, "位置锁定状态会持久化")
+check(decoded.cards.first?.resolvedIsAlwaysOnTop == true, "快捷便签置顶状态会持久化")
 check(decoded.cards.first?.noteRichTextData == sticky.noteRichTextData, "便签富文本数据会持久化")
+check(
+    decoded.importantDates.last?.systemCalendarLink?.authority == .systemCalendar,
+    "系统日历来源关联会持久化"
+)
 
 if var legacyObject = try JSONSerialization.jsonObject(with: encoded) as? [String: Any],
    var legacyCards = legacyObject["cards"] as? [[String: Any]] {
     for index in legacyCards.indices {
         legacyCards[index].removeValue(forKey: "surfaceStyle")
         legacyCards[index].removeValue(forKey: "isPositionLocked")
+        legacyCards[index].removeValue(forKey: "isAlwaysOnTop")
         legacyCards[index].removeValue(forKey: "noteRichTextData")
     }
     legacyObject["cards"] = legacyCards
@@ -185,6 +273,10 @@ if var legacyObject = try JSONSerialization.jsonObject(with: encoded) as? [Strin
     check(
         legacyWorkspace.cards.allSatisfy { !$0.resolvedIsPositionLocked },
         "旧工作区缺少位置锁时默认允许移动"
+    )
+    check(
+        legacyWorkspace.cards.allSatisfy { !$0.resolvedIsAlwaysOnTop },
+        "旧工作区缺少置顶状态时保持桌面层显示"
     )
     check(
         legacyWorkspace.cards.allSatisfy { $0.noteRichTextData == nil },
@@ -211,7 +303,7 @@ if var legacyObject = try JSONSerialization.jsonObject(with: legacyEncoded) as? 
     let data = try JSONSerialization.data(withJSONObject: legacyObject)
     let decodedLegacy = try decoder.decode(TinyDeskWorkspace.self, from: data)
     let migrated = decodedLegacy.migratedToCurrentSchema(calendar: calendar)
-    check(migrated.schemaVersion == 2, "v1 工作区迁移到 schema 2")
+    check(migrated.schemaVersion == 3, "v1 工作区迁移到 schema 3")
     check(migrated.importantDates.count == 1, "旧倒数日迁移为重要日期事件")
     check(migrated.importantDates.first?.title == legacyCountdown.title, "迁移保留旧倒数日标题")
     check(

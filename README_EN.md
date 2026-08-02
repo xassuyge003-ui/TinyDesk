@@ -21,23 +21,22 @@ and position are saved automatically in the app sandbox.
 | Area | Capabilities |
 |---|---|
 | Notes | Multiple cards, direct editing, text colors, bold, italic, underline, strikethrough, and autosave |
-| Important dates | Calendar/list views, birthdays, anniversaries, holidays, one-time events, categories, age/year counts, local notifications |
+| Important dates | Calendar/list views, lunar birthdays and leap-month rules, system Calendar import/linking, recurrence, age/year counts, local notifications |
 | Todos | Editing, completion strikethrough, completed items sorted last, status filters, yesterday and overdue labels |
 | Appearance | Five color themes plus frosted, transparent, and opaque surfaces per card |
 | Layout | Small square, medium wide, and large square presets with free edge resizing |
-| Desktop workflow | All Spaces, show/hide, reset position, position lock, menu bar control center |
+| Desktop workflow | All Spaces, show/hide, reset position, position lock, launch at login, global quick-note shortcut |
 | Privacy | App Sandbox, local JSON, no account, telemetry, analytics, or network requests |
 
 ## Project status
 
-- Current version: `1.1.1` (build 12)
+- Current version: `2.0.0` (build 20)
 - Minimum system: macOS 14
 - Stage: usable early release with a versioned workspace format and legacy migration
-- Automated checks: 40 core model/persistence checks and an unsigned Xcode Debug build
-- Manually verified: direct editing, window layering, size presets, themes, position locks, todo filters, and both important-date views
+- Automated checks: 50 core model/persistence checks; GitHub Actions builds a universal DMG for every release tag
+- Key flows covered: direct editing, window layering, size presets, themes, position locks, todo filters, both important-date views, and lunar conversion
 
-One initial public Release snapshot occupied approximately `4.7 MB`; idle RSS was about `139 MB`, and the
-initial workspace was about `4 KB`. Actual memory and storage depend on macOS, card count, and content.
+Memory and storage depend on macOS, card count, and rich-text content. The workspace remains local to the app sandbox.
 
 ## Requirements
 
@@ -68,8 +67,24 @@ In Xcode:
 3. Select your Personal Team. If the bundle identifier conflicts, change it in `project.yml` and regenerate the project.
 4. Press `⌘R`.
 
-A free personal Apple ID is sufficient for local development. The repository currently distributes
-source code only and does not provide a generally installable Developer ID-notarized binary.
+A free personal Apple ID is sufficient for local development; no paid entitlement is required.
+
+## Install the DMG
+
+Every tag matching the `Info.plist` version publishes a universal `TinyDesk-x.y.z.dmg` and its SHA-256 file on
+[GitHub Releases](https://github.com/xassuyge003-ui/TinyDesk/releases).
+
+1. Open the DMG and drag `TinyDesk.app` to Applications.
+2. For the first launch, Control-click `TinyDesk.app`, choose **Open**, and confirm the macOS prompt.
+3. The free build is ad-hoc signed, not Developer ID-notarized. The prompt reflects that signing boundary; no card data is uploaded.
+
+To build and verify your own image:
+
+```bash
+./scripts/build-dmg.sh
+```
+
+Artifacts are written to `dist/`; the script verifies the universal executable and its signature and writes a SHA-256 file.
 
 ### Command-line verification
 
@@ -99,10 +114,19 @@ locate, show, hide, resize, recolor, lock, reset, or delete cards.
 - The important-date header provides calendar/list switching, category filtering, and event creation.
 - Use the lock icon or a card/control-center menu to prevent accidental movement. Locking does not disable editing or resizing.
 - Cards remain below normal application windows while they have editing focus.
+- Use the menu-bar **Quick Note** action or the configurable global shortcut (default `⌥⌘N`) to create a note at the top center of the active screen. Its header can unpin it; regular cards remain on the desktop layer.
+- The control center's top-right **Settings** button controls launch at login and the quick-note shortcut locally.
 
 Important dates support one-time or yearly recurrence, start years for ages and anniversaries, and
-notifications on the date or 1, 3, or 7 days beforehand. Notification permission is requested only
-after a reminder is enabled.
+notifications on the date or 1, 3, or 7 days beforehand. They can use Gregorian or Chinese lunar dates.
+For a leap-month birthday, the default celebrates the same regular lunar month in years without that
+leap month; strict mode skips those years. Notification permission is requested only after a reminder is enabled.
+
+The important-date card's Calendar button opens system Calendar integration. After the user grants Calendar
+permission, selected calendars can be imported. Imported events keep Calendar as the source for title, date,
+and recurrence while TinyDesk keeps local category, pin, and reminder choices. A local event can instead be
+exported to a writable calendar and then written back on sync. Unlinking stops sync without deleting either copy.
+To avoid silently changing event semantics, import accepts only one-time and yearly system events; Calendar continues to manage weekly, monthly, and other rules.
 
 Completed todos receive a strikethrough and move below pending items. Filters show all, pending, or
 completed tasks; unfinished tasks scheduled for yesterday or earlier receive overdue labels.
@@ -121,16 +145,16 @@ workspace is preserved as a timestamped corrupt backup before defaults are creat
 `workspace.json` before removing the app container.
 
 Notifications are scheduled locally with `UNUserNotificationCenter`; date content is not sent to a
-third party. See [SECURITY.md](./SECURITY.md) for the security policy.
+third party. Calendar permission is requested only for a user-initiated import, link, or sync and is used through local EventKit. See [SECURITY.md](./SECURITY.md) for the security policy.
 
 ## Known limitations
 
 - TinyDesk does not appear in the macOS WidgetKit gallery; this enables true direct editing.
-- There is no iCloud sync, import/export, or multi-user collaboration yet.
-- No Developer ID-notarized binary is distributed; end users currently build with Xcode.
+- There is no iCloud sync, general workspace import/export, or multi-user collaboration yet; selected system Calendar linking is the exception.
+- The DMG is ad-hoc signed, not Developer ID-notarized; Finder confirmation is required on the first launch.
 - Cards do not cover exclusive full-screen apps or float above normal applications.
-- Lunar birthdays, leap-month rules, and system-calendar import are not implemented.
-- v1.0.0 remains downloadable. Editing a v1.1-formatted note in v1.0 may flatten its styles, so back up the workspace before downgrading.
+- Calendar account sharing and conflict resolution remain managed by macOS Calendar; TinyDesk does not merge cloud conflicts.
+- v1.0.0 and v1.1.x remain downloadable. They do not understand v2.0 lunar, Calendar-link, or pin fields, so back up the workspace before downgrading.
 
 ## Architecture
 

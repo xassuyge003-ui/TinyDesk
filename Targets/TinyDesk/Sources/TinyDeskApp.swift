@@ -7,13 +7,25 @@ struct TinyDeskApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var store: DesktopWorkspaceStore
     @StateObject private var windowManager: DesktopWindowManager
+    @StateObject private var settings: TinyDeskSettings
+    @StateObject private var calendarService: SystemCalendarService
 
     @MainActor
     init() {
         TinyDeskNotificationDelegate.install()
         let workspaceStore = DesktopWorkspaceStore()
+        let settingsStore = TinyDeskSettings()
+        let systemCalendarService = SystemCalendarService()
         _store = StateObject(wrappedValue: workspaceStore)
-        _windowManager = StateObject(wrappedValue: DesktopWindowManager(store: workspaceStore))
+        _settings = StateObject(wrappedValue: settingsStore)
+        _calendarService = StateObject(wrappedValue: systemCalendarService)
+        _windowManager = StateObject(
+            wrappedValue: DesktopWindowManager(
+                store: workspaceStore,
+                settings: settingsStore,
+                calendarService: systemCalendarService
+            )
+        )
     }
 
     var body: some Scene {
@@ -21,12 +33,21 @@ struct TinyDeskApp: App {
             ControlCenterView()
                 .environmentObject(store)
                 .environmentObject(windowManager)
+                .environmentObject(settings)
+                .environmentObject(calendarService)
                 .onAppear {
                     windowManager.start()
+                    calendarService.refreshCalendars()
+                    Task { await store.synchronizeSystemCalendar(using: calendarService) }
                     NSApplication.shared.activate(ignoringOtherApps: true)
                 }
                 .onChange(of: scenePhase) { _, phase in
-                    if phase != .active { _ = store.persistNow() }
+                    if phase == .active {
+                        calendarService.refreshCalendars()
+                        Task { await store.synchronizeSystemCalendar(using: calendarService) }
+                    } else {
+                        _ = store.persistNow()
+                    }
                 }
         }
         .defaultSize(width: 820, height: 680)
@@ -54,6 +75,8 @@ struct TinyDeskApp: App {
             TinyDeskMenuBarView()
                 .environmentObject(store)
                 .environmentObject(windowManager)
+                .environmentObject(settings)
+                .environmentObject(calendarService)
                 .onAppear { windowManager.start() }
         }
         .menuBarExtraStyle(.menu)
@@ -74,6 +97,9 @@ private struct TinyDeskMenuBarView: View {
 
         Button("新建便签", systemImage: "note.text.badge.plus") {
             windowManager.createCard(.sticky)
+        }
+        Button("快速新建置顶便签", systemImage: "pin.fill") {
+            windowManager.createQuickSticky()
         }
         Button("新建重要日期", systemImage: "calendar.badge.plus") {
             windowManager.createCard(.countdown)
@@ -101,6 +127,10 @@ private struct TinyDeskMenuBarView: View {
         }
 
         Divider()
+
+        Button("打开控制中心设置", systemImage: "gearshape") {
+            openControlCenter()
+        }
 
         Button("退出 TinyDesk", systemImage: "power") {
             windowManager.closePanels()
