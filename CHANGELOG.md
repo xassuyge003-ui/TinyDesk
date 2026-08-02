@@ -5,7 +5,31 @@
 
 ## [Unreleased]
 
-## [0.3.2] - 2026-08-02
+## [1.1.1] - 2026-08-02
+
+### Fixed
+
+- 修复斜体小数倾斜值的检测，避免再次点击时重复应用而无法取消。
+- 将视觉很弱的倾斜属性替换为可逆的字体矩阵剪切，让中文字形明显右倾，同时保持 RTF 重启兼容。
+- 修复圆角系统字体无法取消粗体的问题，再次点击后恢复常规字重。
+- 将不明确的颜色圆点替换为带文字标识和当前色块的调色板按钮。
+- 增加 AppKit 控制器回归测试，覆盖选区范围、状态、反复切换、样式组合、颜色和 RTF 持久化。
+- CI 生成工程时固定为 Xcode 15 兼容格式。
+
+## [1.1.0] - 2026-08-02
+
+### Added
+
+- 便签增加富文本工具栏，支持对选中文字设置颜色、粗体、斜体、下划线和删除线。
+- 支持清除选中文字的格式；未选择文字时，格式会应用到随后输入的内容。
+- 富文本以 RTF 数据保存在原有本地工作区中，同时保留纯文本字段兼容旧版便签。
+
+### Changed
+
+- 便签编辑器由 SwiftUI `TextEditor` 升级为 AppKit `NSTextView`，保留直接编辑、撤销、滚动和自动保存体验。
+- 核心模型与持久化自检增加到 40 项。
+
+## [1.0.0] - 2026-08-02
 
 ### Fixed
 
@@ -37,11 +61,13 @@
 - 倒数日模块升级为全局重要日期库；旧倒数日会通过 schema 2 自动迁移为一次性事件。
 - 重要日期卡片移除标题拖动区，将日历/列表、分类筛选和新增操作整合到第一行；外观与尺寸收进设置菜单。
 - 工程由多扩展架构迁移为单一 SwiftUI + AppKit macOS 应用。
-- 产品范围聚焦便签、重要日期和待办，版本更新为 0.3.2。
+- 产品范围聚焦便签、重要日期和待办，形成首个公开版本 1.0.0。
 
 ### Removed
 
 - 所有系统扩展、联网聚合以及跨进程共享能力。
 
-[Unreleased]: https://github.com/xassuyge003-ui/TinyDesk/compare/v0.3.2...HEAD
-[0.3.2]: https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v0.3.2
+[Unreleased]: https://github.com/xassuyge003-ui/TinyDesk/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/xassuyge003-ui/TinyDesk/compare/v1.1.0...v1.1.1
+[1.1.0]: https://github.com/xassuyge003-ui/TinyDesk/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v1.0.0

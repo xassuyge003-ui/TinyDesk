@@ -242,26 +242,36 @@ struct DesktopCardHostView: View {
 
 private struct StickyCardContent: View {
     @EnvironmentObject private var store: DesktopWorkspaceStore
+    @StateObject private var editorController = RichTextEditorController()
     let card: DesktopCard
     let availableSize: CGSize
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            TextEditor(text: noteBinding)
-                .font(.system(size: availableSize.width < 270 ? 15 : 17, design: .rounded))
-                .lineSpacing(3)
-                .scrollContentBackground(.hidden)
-                .background(.clear)
+        VStack(spacing: 0) {
+            RichTextFormattingToolbar(
+                controller: editorController,
+                compact: availableSize.width < 270
+            )
+
+            ZStack(alignment: .topLeading) {
+                RichTextEditor(
+                    richTextData: card.noteRichTextData,
+                    fallbackText: card.noteText,
+                    fontSize: availableSize.width < 270 ? 15 : 17,
+                    controller: editorController,
+                    onChange: persistRichText
+                )
                 .padding(.horizontal, 9)
                 .padding(.bottom, availableSize.height > 220 ? 24 : 8)
 
-            if card.noteText.isEmpty {
-                Text("写点什么…")
-                    .font(.system(size: availableSize.width < 270 ? 15 : 17, design: .rounded))
-                    .foregroundStyle(.secondary.opacity(0.65))
-                    .padding(.leading, 17)
-                    .padding(.top, 2)
-                    .allowsHitTesting(false)
+                if card.noteText.isEmpty {
+                    Text("写点什么…")
+                        .font(.system(size: availableSize.width < 270 ? 15 : 17, design: .rounded))
+                        .foregroundStyle(.secondary.opacity(0.65))
+                        .padding(.leading, 17)
+                        .padding(.top, 2)
+                        .allowsHitTesting(false)
+                }
             }
         }
         .overlay(alignment: .bottomLeading) {
@@ -276,11 +286,165 @@ private struct StickyCardContent: View {
         }
     }
 
-    private var noteBinding: Binding<String> {
-        Binding(
-            get: { store.card(withID: card.id)?.noteText ?? "" },
-            set: { value in store.updateCard(card.id) { $0.noteText = value } }
+    private func persistRichText(_ data: Data?, _ plainText: String) {
+        store.updateCard(card.id) {
+            $0.noteText = plainText
+            $0.noteRichTextData = data
+        }
+    }
+}
+
+private struct RichTextFormattingToolbar: View {
+    @ObservedObject var controller: RichTextEditorController
+    let compact: Bool
+
+    var body: some View {
+        HStack(spacing: compact ? 3 : 5) {
+            RichTextFormatButton(
+                systemName: "bold",
+                help: "粗体",
+                isActive: controller.format.isBold,
+                isEnabled: controller.isReady,
+                action: controller.toggleBold
+            )
+            RichTextFormatButton(
+                systemName: "italic",
+                help: "斜体",
+                isActive: controller.format.isItalic,
+                isEnabled: controller.isReady,
+                action: controller.toggleItalic
+            )
+            RichTextFormatButton(
+                systemName: "underline",
+                help: "下划线",
+                isActive: controller.format.isUnderlined,
+                isEnabled: controller.isReady,
+                action: controller.toggleUnderline
+            )
+            RichTextFormatButton(
+                systemName: "strikethrough",
+                help: "删除线",
+                isActive: controller.format.isStruckThrough,
+                isEnabled: controller.isReady,
+                action: controller.toggleStrikethrough
+            )
+
+            Divider()
+                .frame(height: 16)
+
+            Menu {
+                ForEach(RichTextPaletteChoice.options) { choice in
+                    Button {
+                        controller.applyForegroundColor(choice.color)
+                    } label: {
+                        Label(
+                            choice.displayName,
+                            systemImage: choice.matches(controller.format.foregroundColor)
+                                ? "checkmark.circle.fill"
+                                : "circle.fill"
+                        )
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "paintpalette.fill")
+                        .font(.system(size: 11, weight: .semibold))
+
+                    Circle()
+                        .fill(Color(nsColor: controller.format.foregroundColor))
+                        .frame(width: 10, height: 10)
+                        .overlay(Circle().stroke(.white.opacity(0.65), lineWidth: 1))
+
+                    if !compact {
+                        Text("颜色")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 5)
+                .frame(height: 22)
+                .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 5))
+                .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .disabled(!controller.isReady)
+            .help("文字颜色")
+            .accessibilityLabel("文字颜色")
+
+            RichTextFormatButton(
+                systemName: "textformat",
+                help: "清除格式",
+                isActive: false,
+                isEnabled: controller.isReady,
+                action: controller.clearFormatting
+            )
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, compact ? 10 : 14)
+        .padding(.vertical, 3)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(.secondary.opacity(0.12))
+                .frame(height: 1)
+        }
+    }
+}
+
+private struct RichTextPaletteChoice: Identifiable {
+    let id: String
+    let displayName: String
+    let color: NSColor
+
+    static let options: [RichTextPaletteChoice] = [
+        RichTextPaletteChoice(id: "default", displayName: "默认", color: .labelColor),
+        RichTextPaletteChoice(id: "red", displayName: "红色", color: .systemRed),
+        RichTextPaletteChoice(id: "orange", displayName: "橙色", color: .systemOrange),
+        RichTextPaletteChoice(id: "yellow", displayName: "黄色", color: .systemYellow),
+        RichTextPaletteChoice(id: "green", displayName: "绿色", color: .systemGreen),
+        RichTextPaletteChoice(id: "blue", displayName: "蓝色", color: .systemBlue),
+        RichTextPaletteChoice(id: "purple", displayName: "紫色", color: .systemPurple),
+        RichTextPaletteChoice(id: "pink", displayName: "粉色", color: .systemPink),
+        RichTextPaletteChoice(id: "gray", displayName: "灰色", color: .systemGray),
+    ]
+
+    func matches(_ other: NSColor) -> Bool {
+        guard let lhs = color.usingColorSpace(.deviceRGB),
+              let rhs = other.usingColorSpace(.deviceRGB)
+        else { return color == other }
+
+        return abs(lhs.redComponent - rhs.redComponent) < 0.01
+            && abs(lhs.greenComponent - rhs.greenComponent) < 0.01
+            && abs(lhs.blueComponent - rhs.blueComponent) < 0.01
+            && abs(lhs.alphaComponent - rhs.alphaComponent) < 0.01
+    }
+}
+
+private struct RichTextFormatButton: View {
+    let systemName: String
+    let help: String
+    let isActive: Bool
+    let isEnabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 23, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isActive ? Color.white : .secondary)
+        .background(
+            isActive ? Color.accentColor.opacity(0.88) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 5, style: .continuous)
         )
+        .disabled(!isEnabled)
+        .help(help)
+        .accessibilityLabel(help)
     }
 }
 
