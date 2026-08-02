@@ -1,0 +1,30 @@
+# Xcode / 构建产物
+TinyDesk.xcodeproj/
+TinyDesk.xcworkspace/
+build/
+DerivedData/
+.derived/
+dist/
+artifacts/
+*.xcuserdata/
+*.xcscmblueprint
+*.ipa
+*.dmg
+*.zip
+
+# SwiftPM 构建缓存
+.build/
+.swiftpm/
+
+# macOS
+.DS_Store
+
+# 本机配置与签名材料
+.env
+.env.*
+!.env.example
+*.p12
+*.mobileprovision
+*.provisionprofile
+
+# xcodegen 由 project.yml 重新生成, 不入库

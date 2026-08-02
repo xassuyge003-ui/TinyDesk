@@ -1,0 +1,56 @@
+name: TinyDesk
+options:
+  bundleIdPrefix: com.kai.tinydesk
+  deploymentTarget:
+    macOS: "14.0"
+  developmentLanguage: zh-Hans
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    # Each contributor selects their own Personal Team in Xcode.
+    # Never commit a personal Apple Developer Team ID here.
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGNING_ALLOWED: YES
+    ENABLE_HARDENED_RUNTIME: YES
+    DEAD_CODE_STRIPPING: YES
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: NO
+
+packages:
+  TinyDeskCore:
+    path: TinyDeskCore
+
+targets:
+  TinyDesk:
+    type: application
+    platform: macOS
+    sources:
+      - path: Targets/TinyDesk/Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kai.tinydesk
+        PRODUCT_NAME: TinyDesk
+        INFOPLIST_FILE: Targets/TinyDesk/SupportingFiles/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Targets/TinyDesk/SupportingFiles/TinyDesk.entitlements
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_APP_SANDBOX: YES
+    dependencies:
+      - package: TinyDeskCore
+        product: TinyDeskCore
+
+schemes:
+  TinyDesk:
+    build:
+      targets:
+        TinyDesk: all
+    run:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

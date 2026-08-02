@@ -1,0 +1,40 @@
+name: ci
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  core-tests:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+      - name: Build & run TinyDeskCore self-tests
+        working-directory: TinyDeskCore
+        run: swift run -c release TinyDeskSelfTests
+
+  build-workspace:
+    runs-on: macos-14
+    needs: core-tests
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+      - name: Install xcodegen
+        run: |
+          git clone --branch 2.46.0 --depth 1 https://github.com/yonaskolb/XcodeGen.git /tmp/xg
+          (cd /tmp/xg && swift build -c release)
+          echo "/tmp/xg/.build/release" >> $GITHUB_PATH
+      - name: Generate & build Xcode project
+        run: |
+          xcodegen --version
+          xcodegen generate
+          xcodebuild -project TinyDesk.xcodeproj -scheme TinyDesk \
+            -destination 'platform=macOS,arch=arm64' \
+            -configuration Debug CODE_SIGNING_ALLOWED=NO build
