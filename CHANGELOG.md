@@ -5,6 +5,19 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-02
+
+### Added
+
+- 便签增加富文本工具栏，支持对选中文字设置颜色、粗体、斜体、下划线和删除线。
+- 支持清除选中文字的格式；未选择文字时，格式会应用到随后输入的内容。
+- 富文本以 RTF 数据保存在原有本地工作区中，同时保留纯文本字段兼容旧版便签。
+
+### Changed
+
+- 便签编辑器由 SwiftUI `TextEditor` 升级为 AppKit `NSTextView`，保留直接编辑、撤销、滚动和自动保存体验。
+- 核心模型与持久化自检增加到 40 项。
+
 ## [1.0.0] - 2026-08-02
 
 ### Fixed
@@ -43,5 +56,6 @@
 
 - 所有系统扩展、联网聚合以及跨进程共享能力。
 
-[Unreleased]: https://github.com/xassuyge003-ui/TinyDesk/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/xassuyge003-ui/TinyDesk/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/xassuyge003-ui/TinyDesk/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v1.0.0

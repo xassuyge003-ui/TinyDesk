@@ -25,6 +25,7 @@ TinyDesk/
 │   │   ├── TinyDeskApp.swift              # Scene、菜单栏、应用命令
 │   │   ├── ControlCenterView.swift         # 新建与管理卡片
 │   │   ├── DesktopCardView.swift           # 三类响应式卡片 UI
+│   │   ├── RichTextEditor.swift             # NSTextView 富文本编辑与格式控制
 │   │   ├── DesktopWindowManager.swift      # NSPanel 生命周期和桌面层级
 │   │   ├── DesktopWorkspaceStore.swift     # 本地 JSON 持久化
 │   │   └── ImportantDateNotificationScheduler.swift # 本地通知同步
@@ -47,6 +48,7 @@ TinyDesk/
 - 窗口加入所有 Space，并记录 frame 与屏幕标识；显示器变化时自动夹回可见区域。
 - 卡片提供 280×280、440×220、440×440 三种预设比例，同时保留边缘自由缩放；内容根据宽高切换紧凑布局。
 - 背景风格与颜色按卡片持久化；旧版 JSON 没有 `surfaceStyle` 时回退为毛玻璃。
+- 便签同时保存 `noteText` 纯文本和可选的 `noteRichTextData` RTF 数据；旧工作区缺少 RTF 时直接以纯文本创建富文本内容。
 - 待办完成项按视图稳定分组到末尾，不改写原始数组顺序；无计划日期的旧事项以创建日期计算跨日状态。
 - 重要日期卡片在小/中尺寸使用紧凑日历，在大尺寸展示选中日期事件；也可切换为按下一次日期排序的列表。
 - 重要日期使用专属紧凑顶栏；通用外观和尺寸操作收进设置菜单，避免小尺寸横向拥挤。

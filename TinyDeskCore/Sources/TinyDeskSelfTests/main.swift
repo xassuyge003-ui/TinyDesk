@@ -154,6 +154,7 @@ var sticky = DesktopCard.sticky(now: now)
 sticky.frame = DesktopCardFrame(x: 40, y: 80, width: 320, height: 280, screenIdentifier: "1")
 sticky.surfaceStyle = .opaque
 sticky.isPositionLocked = true
+sticky.noteRichTextData = Data("{\\rtf1 TinyDesk}".utf8)
 let workspace = TinyDeskWorkspace(cards: [sticky, countdown, todo], importantDates: [newYear, birthday, oneTime])
 let encoder = JSONEncoder()
 encoder.dateEncodingStrategy = .iso8601
@@ -165,12 +166,14 @@ check(decoded == workspace, "工作区 JSON 可无损往返")
 check(decoded.cards.first?.frame?.screenIdentifier == "1", "窗口位置和屏幕标识会持久化")
 check(decoded.cards.first?.resolvedSurfaceStyle == .opaque, "背景风格会持久化")
 check(decoded.cards.first?.resolvedIsPositionLocked == true, "位置锁定状态会持久化")
+check(decoded.cards.first?.noteRichTextData == sticky.noteRichTextData, "便签富文本数据会持久化")
 
 if var legacyObject = try JSONSerialization.jsonObject(with: encoded) as? [String: Any],
    var legacyCards = legacyObject["cards"] as? [[String: Any]] {
     for index in legacyCards.indices {
         legacyCards[index].removeValue(forKey: "surfaceStyle")
         legacyCards[index].removeValue(forKey: "isPositionLocked")
+        legacyCards[index].removeValue(forKey: "noteRichTextData")
     }
     legacyObject["cards"] = legacyCards
     let legacyData = try JSONSerialization.data(withJSONObject: legacyObject)
@@ -182,6 +185,10 @@ if var legacyObject = try JSONSerialization.jsonObject(with: encoded) as? [Strin
     check(
         legacyWorkspace.cards.allSatisfy { !$0.resolvedIsPositionLocked },
         "旧工作区缺少位置锁时默认允许移动"
+    )
+    check(
+        legacyWorkspace.cards.allSatisfy { $0.noteRichTextData == nil },
+        "旧工作区缺少富文本数据时保留纯文本便签"
     )
 } else {
     check(false, "旧工作区兼容性测试数据可构造")

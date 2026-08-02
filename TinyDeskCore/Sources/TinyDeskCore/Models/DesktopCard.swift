@@ -291,6 +291,7 @@ public struct DesktopCard: Identifiable, Codable, Sendable, Equatable {
     public var kind: DesktopCardKind
     public var title: String
     public var noteText: String
+    public var noteRichTextData: Data?
     public var targetDate: Date
     public var todoItems: [TinyDeskTodoItem]
     public var theme: DesktopCardTheme
@@ -309,6 +310,7 @@ public struct DesktopCard: Identifiable, Codable, Sendable, Equatable {
         kind: DesktopCardKind,
         title: String,
         noteText: String = "",
+        noteRichTextData: Data? = nil,
         targetDate: Date = Date(),
         todoItems: [TinyDeskTodoItem] = [],
         theme: DesktopCardTheme = .graphite,
@@ -326,6 +328,7 @@ public struct DesktopCard: Identifiable, Codable, Sendable, Equatable {
         self.kind = kind
         self.title = title
         self.noteText = noteText
+        self.noteRichTextData = noteRichTextData
         self.targetDate = targetDate
         self.todoItems = todoItems
         self.theme = theme

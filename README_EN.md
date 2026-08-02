@@ -20,7 +20,7 @@ and position are saved automatically in the app sandbox.
 
 | Area | Capabilities |
 |---|---|
-| Notes | Multiple cards, editable title and body, placeholder alignment, autosave |
+| Notes | Multiple cards, direct editing, text colors, bold, italic, underline, strikethrough, and autosave |
 | Important dates | Calendar/list views, birthdays, anniversaries, holidays, one-time events, categories, age/year counts, local notifications |
 | Todos | Editing, completion strikethrough, completed items sorted last, status filters, yesterday and overdue labels |
 | Appearance | Five color themes plus frosted, transparent, and opaque surfaces per card |
@@ -30,10 +30,10 @@ and position are saved automatically in the app sandbox.
 
 ## Project status
 
-- Current version: `1.0.0` (build 10)
+- Current version: `1.1.0` (build 11)
 - Minimum system: macOS 14
 - Stage: usable early release with a versioned workspace format and legacy migration
-- Automated checks: 38 core model/persistence checks and an unsigned Xcode Debug build
+- Automated checks: 40 core model/persistence checks and an unsigned Xcode Debug build
 - Manually verified: direct editing, window layering, size presets, themes, position locks, todo filters, and both important-date views
 
 One initial public Release snapshot occupied approximately `4.7 MB`; idle RSS was about `139 MB`, and the
@@ -94,6 +94,7 @@ closing the control center, TinyDesk remains available from the menu bar. From t
 locate, show, hide, resize, recolor, lock, reset, or delete cards.
 
 - Click note and todo text directly to edit it.
+- Select note text and use the formatting bar for color, bold, italic, underline, strikethrough, or clearing styles.
 - Drag an unlocked card's header to move it, or drag an edge to resize it.
 - The important-date header provides calendar/list switching, category filtering, and event creation.
 - Use the lock icon or a card/control-center menu to prevent accidental movement. Locking does not disable editing or resizing.
@@ -108,7 +109,8 @@ completed tasks; unfinished tasks scheduled for yesterday or earlier receive ove
 
 ## Data and privacy
 
-TinyDesk contains no account system, analytics SDK, ads, cloud sync, or network content. Data is stored at:
+TinyDesk contains no account system, analytics SDK, ads, cloud sync, or network content. Plain note
+text, rich-text formatting, important dates, todos, and layout data are stored at:
 
 ```text
 ~/Library/Containers/com.kai.tinydesk/Data/Library/Application Support/TinyDesk/workspace.json
@@ -128,6 +130,7 @@ third party. See [SECURITY.md](./SECURITY.md) for the security policy.
 - No Developer ID-notarized binary is distributed; end users currently build with Xcode.
 - Cards do not cover exclusive full-screen apps or float above normal applications.
 - Lunar birthdays, leap-month rules, and system-calendar import are not implemented.
+- v1.0.0 remains downloadable. Editing a v1.1-formatted note in v1.0 may flatten its styles, so back up the workspace before downgrading.
 
 ## Architecture
 
