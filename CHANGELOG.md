@@ -5,6 +5,17 @@
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-08-02
+
+### Fixed
+
+- 修复斜体小数倾斜值的检测，避免再次点击时重复应用而无法取消。
+- 将视觉很弱的倾斜属性替换为可逆的字体矩阵剪切，让中文字形明显右倾，同时保持 RTF 重启兼容。
+- 修复圆角系统字体无法取消粗体的问题，再次点击后恢复常规字重。
+- 将不明确的颜色圆点替换为带文字标识和当前色块的调色板按钮。
+- 增加 AppKit 控制器回归测试，覆盖选区范围、状态、反复切换、样式组合、颜色和 RTF 持久化。
+- CI 生成工程时固定为 Xcode 15 兼容格式。
+
 ## [1.1.0] - 2026-08-02
 
 ### Added
@@ -56,6 +67,7 @@
 
 - 所有系统扩展、联网聚合以及跨进程共享能力。
 
-[Unreleased]: https://github.com/xassuyge003-ui/TinyDesk/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/xassuyge003-ui/TinyDesk/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/xassuyge003-ui/TinyDesk/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/xassuyge003-ui/TinyDesk/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v1.0.0

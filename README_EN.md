@@ -30,7 +30,7 @@ and position are saved automatically in the app sandbox.
 
 ## Project status
 
-- Current version: `1.1.0` (build 11)
+- Current version: `1.1.1` (build 12)
 - Minimum system: macOS 14
 - Stage: usable early release with a versioned workspace format and legacy migration
 - Automated checks: 40 core model/persistence checks and an unsigned Xcode Debug build

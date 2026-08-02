@@ -346,18 +346,32 @@ private struct RichTextFormattingToolbar: View {
                     }
                 }
             } label: {
-                Circle()
-                    .fill(Color(nsColor: controller.format.foregroundColor))
-                    .frame(width: 12, height: 12)
-                    .overlay(Circle().stroke(.white.opacity(0.55), lineWidth: 1))
-                    .frame(width: 24, height: 22)
-                    .contentShape(Rectangle())
+                HStack(spacing: 4) {
+                    Image(systemName: "paintpalette.fill")
+                        .font(.system(size: 11, weight: .semibold))
+
+                    Circle()
+                        .fill(Color(nsColor: controller.format.foregroundColor))
+                        .frame(width: 10, height: 10)
+                        .overlay(Circle().stroke(.white.opacity(0.65), lineWidth: 1))
+
+                    if !compact {
+                        Text("颜色")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 5)
+                .frame(height: 22)
+                .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 5))
+                .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
             .disabled(!controller.isReady)
             .help("文字颜色")
+            .accessibilityLabel("文字颜色")
 
             RichTextFormatButton(
                 systemName: "textformat",
@@ -423,9 +437,9 @@ private struct RichTextFormatButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(isActive ? Color.accentColor : .secondary)
+        .foregroundStyle(isActive ? Color.white : .secondary)
         .background(
-            isActive ? Color.accentColor.opacity(0.16) : Color.clear,
+            isActive ? Color.accentColor.opacity(0.88) : Color.clear,
             in: RoundedRectangle(cornerRadius: 5, style: .continuous)
         )
         .disabled(!isEnabled)

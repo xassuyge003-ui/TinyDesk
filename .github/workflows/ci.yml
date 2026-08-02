@@ -18,6 +18,13 @@ jobs:
       - name: Build & run TinyDeskCore self-tests
         working-directory: TinyDeskCore
         run: swift run -c release TinyDeskSelfTests
+      - name: Run rich-text controller tests
+        run: |
+          swiftc -parse-as-library \
+            Targets/TinyDesk/Sources/RichTextEditor.swift \
+            Tests/RichTextEditorControllerTests.swift \
+            -o /tmp/TinyDeskRichTextEditorControllerTests
+          /tmp/TinyDeskRichTextEditorControllerTests
 
   build-workspace:
     runs-on: macos-14

@@ -1,6 +1,7 @@
 name: TinyDesk
 options:
   bundleIdPrefix: com.kai.tinydesk
+  projectFormat: xcode15_0
   deploymentTarget:
     macOS: "14.0"
   developmentLanguage: zh-Hans
