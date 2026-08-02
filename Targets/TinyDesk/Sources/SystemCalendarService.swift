@@ -42,7 +42,9 @@ final class SystemCalendarService: ObservableObject {
             object: eventStore,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.refreshCalendars() }
+            Task { @MainActor [weak self] in
+                self?.refreshCalendars()
+            }
         }
     }
 
