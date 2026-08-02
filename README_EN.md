@@ -30,13 +30,13 @@ and position are saved automatically in the app sandbox.
 
 ## Project status
 
-- Current version: `0.3.2` (build 8)
+- Current version: `1.0.0` (build 10)
 - Minimum system: macOS 14
 - Stage: usable early release with a versioned workspace format and legacy migration
 - Automated checks: 38 core model/persistence checks and an unsigned Xcode Debug build
 - Manually verified: direct editing, window layering, size presets, themes, position locks, todo filters, and both important-date views
 
-One 0.3.2 Release snapshot occupied approximately `4.7 MB`; idle RSS was about `139 MB`, and the
+One initial public Release snapshot occupied approximately `4.7 MB`; idle RSS was about `139 MB`, and the
 initial workspace was about `4 KB`. Actual memory and storage depend on macOS, card count, and content.
 
 ## Requirements

@@ -27,10 +27,9 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
       - name: Install xcodegen
-        run: |
-          git clone --branch 2.46.0 --depth 1 https://github.com/yonaskolb/XcodeGen.git /tmp/xg
-          (cd /tmp/xg && swift build -c release)
-          echo "/tmp/xg/.build/release" >> $GITHUB_PATH
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install xcodegen
       - name: Generate & build Xcode project
         run: |
           xcodegen --version

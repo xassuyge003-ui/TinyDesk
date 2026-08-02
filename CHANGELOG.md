@@ -5,7 +5,7 @@
 
 ## [Unreleased]
 
-## [0.3.2] - 2026-08-02
+## [1.0.0] - 2026-08-02
 
 ### Fixed
 
@@ -37,11 +37,11 @@
 - 倒数日模块升级为全局重要日期库；旧倒数日会通过 schema 2 自动迁移为一次性事件。
 - 重要日期卡片移除标题拖动区，将日历/列表、分类筛选和新增操作整合到第一行；外观与尺寸收进设置菜单。
 - 工程由多扩展架构迁移为单一 SwiftUI + AppKit macOS 应用。
-- 产品范围聚焦便签、重要日期和待办，版本更新为 0.3.2。
+- 产品范围聚焦便签、重要日期和待办，形成首个公开版本 1.0.0。
 
 ### Removed
 
 - 所有系统扩展、联网聚合以及跨进程共享能力。
 
-[Unreleased]: https://github.com/xassuyge003-ui/TinyDesk/compare/v0.3.2...HEAD
-[0.3.2]: https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v0.3.2
+[Unreleased]: https://github.com/xassuyge003-ui/TinyDesk/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v1.0.0
