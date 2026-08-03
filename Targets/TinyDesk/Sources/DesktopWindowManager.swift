@@ -256,7 +256,7 @@ final class DesktopWindowManager: ObservableObject {
         panel.acceptsMouseMovedEvents = true
         panel.level = desiredWindowLevel(for: card)
         panel.animationBehavior = .utilityWindow
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.collectionBehavior = DesktopCardWindowPolicy.collectionBehavior
         panel.tabbingMode = .disallowed
         panel.isExcludedFromWindowsMenu = true
         panel.standardWindowButton(.closeButton)?.isHidden = true

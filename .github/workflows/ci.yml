@@ -25,6 +25,13 @@ jobs:
             Tests/RichTextEditorControllerTests.swift \
             -o /tmp/TinyDeskRichTextEditorControllerTests
           /tmp/TinyDeskRichTextEditorControllerTests
+      - name: Run desktop fullscreen behavior tests
+        run: |
+          swiftc \
+            Targets/TinyDesk/Sources/DesktopCardWindowPolicy.swift \
+            Tests/DesktopCardWindowPolicyTests.swift \
+            -o /tmp/TinyDeskDesktopCardWindowPolicyTests
+          /tmp/TinyDeskDesktopCardWindowPolicyTests
 
   build-workspace:
     runs-on: macos-14
