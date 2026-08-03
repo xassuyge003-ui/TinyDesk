@@ -256,7 +256,8 @@ final class DesktopWindowManager: ObservableObject {
         panel.acceptsMouseMovedEvents = true
         panel.level = desiredWindowLevel(for: card)
         panel.animationBehavior = .utilityWindow
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        // Keep cards on regular desktop spaces, but never place them over another app's full-screen content.
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenNone, .stationary]
         panel.tabbingMode = .disallowed
         panel.isExcludedFromWindowsMenu = true
         panel.standardWindowButton(.closeButton)?.isHidden = true

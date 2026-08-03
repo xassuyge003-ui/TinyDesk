@@ -25,6 +25,21 @@ jobs:
             Tests/RichTextEditorControllerTests.swift \
             -o /tmp/TinyDeskRichTextEditorControllerTests
           /tmp/TinyDeskRichTextEditorControllerTests
+      - name: Run desktop fullscreen behavior tests
+        run: |
+          CORE_BUILD_DIR=TinyDeskCore/.build/arm64-apple-macosx/release
+          SDK_ROOT="$(xcrun --show-sdk-path)"
+          swiftc -target arm64-apple-macos14.0 -sdk "$SDK_ROOT" \
+            -I "$CORE_BUILD_DIR/Modules" \
+            $(find Targets/TinyDesk/Sources -name '*.swift' ! -name 'TinyDeskApp.swift' | sort) \
+            Tests/DesktopWindowManagerTests.swift \
+            "$CORE_BUILD_DIR/TinyDeskCore.build/TinyDeskConst.swift.o" \
+            "$CORE_BUILD_DIR/TinyDeskCore.build/DesktopCard.swift.o" \
+            "$CORE_BUILD_DIR/TinyDeskCore.build/ChineseLunarCalendar.swift.o" \
+            -framework AppKit -framework SwiftUI -framework EventKit \
+            -framework ServiceManagement -framework Carbon \
+            -o /tmp/TinyDeskDesktopWindowManagerTests
+          /tmp/TinyDeskDesktopWindowManagerTests
 
   build-workspace:
     runs-on: macos-14
