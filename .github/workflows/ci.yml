@@ -27,9 +27,9 @@ jobs:
           /tmp/TinyDeskRichTextEditorControllerTests
       - name: Run desktop fullscreen behavior tests
         run: |
-          CORE_BUILD_DIR=TinyDeskCore/.build/arm64-apple-macosx/release
+          CORE_BUILD_DIR="$(cd TinyDeskCore && swift build -c release --show-bin-path)"
           SDK_ROOT="$(xcrun --show-sdk-path)"
-          swiftc -target arm64-apple-macos14.0 -sdk "$SDK_ROOT" \
+          swiftc -sdk "$SDK_ROOT" \
             -I "$CORE_BUILD_DIR/Modules" \
             $(find Targets/TinyDesk/Sources -name '*.swift' ! -name 'TinyDeskApp.swift' | sort) \
             Tests/DesktopWindowManagerTests.swift \
