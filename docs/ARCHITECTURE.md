@@ -28,11 +28,15 @@ TinyDesk/
 │   │   ├── RichTextEditor.swift             # NSTextView 富文本编辑与格式控制
 │   │   ├── DesktopWindowManager.swift      # NSPanel 生命周期和桌面层级
 │   │   ├── DesktopWorkspaceStore.swift     # 本地 JSON 持久化
+│   │   ├── SystemCalendarService.swift      # EventKit 导入、关联和同步
+│   │   ├── TinyDeskSettings.swift           # 开机启动与偏好设置
+│   │   ├── GlobalShortcut.swift             # 原生全局快捷键与录制控件
 │   │   └── ImportantDateNotificationScheduler.swift # 本地通知同步
 │   └── SupportingFiles/                    # Info.plist 与沙盒权限
 ├── TinyDeskCore/
 │   └── Sources/
 │       ├── TinyDeskCore/Models/DesktopCard.swift
+│       ├── TinyDeskCore/Models/ChineseLunarCalendar.swift
 │       └── TinyDeskSelfTests/main.swift
 ├── project.yml                              # XcodeGen 单一事实来源
 └── TinyDesk.xcodeproj                       # 由 project.yml 生成
@@ -53,6 +57,7 @@ TinyDesk/
 - 重要日期卡片在小/中尺寸使用紧凑日历，在大尺寸展示选中日期事件；也可切换为按下一次日期排序的列表。
 - 重要日期使用专属紧凑顶栏；通用外观和尺寸操作收进设置菜单，避免小尺寸横向拥挤。
 - `isPositionLocked` 按卡片持久化；锁定时同时关闭 `NSWindow.isMovable`、背景拖动和自定义拖动柄。
+- 快速便签在鼠标所在屏幕的顶部中央创建；默认置顶为 floating 层，用户可关闭置顶以恢复桌面层，状态随工作区保存。
 
 ## 数据策略
 
@@ -63,9 +68,9 @@ TinyDesk/
 ```
 
 写入使用原子替换。无法解码的工作区会先改名为带时间戳的 `corrupt` 备份，再创建默认工作区。
-当前 schema 版本为 2。schema 1 中每张旧倒数日会迁移为一个一次性 `ImportantDateEvent`，卡片位置、外观、标题和目标日期保持不变。
+当前 schema 版本为 3。schema 1 中每张旧倒数日会迁移为一个一次性 `ImportantDateEvent`，卡片位置、外观、标题和目标日期保持不变；schema 3 为每张卡片补充可选的 `isAlwaysOnTop`，旧卡片默认维持桌面层。
 
-重要日期存为工作区级事件库，多个日期卡片共享同一数据源。提醒由 `UNUserNotificationCenter` 在本机调度，不需要 App Group、推送证书或付费开发者能力；仅在用户为某条记录启用提醒时请求系统权限。
+重要日期存为工作区级事件库，多个日期卡片共享同一数据源。农历日期的换算由 Foundation 的中国历在核心层完成。`SystemCalendarLink` 为可选记录：系统来源读取并刷新系统日历事件，本地来源可写回用户选择的可写日历。为维持 TinyDesk 的“一次性/每年”模型，系统日历导入仅接受这两种重复规则，周/月等规则不会被错误转换。提醒由 `UNUserNotificationCenter` 在本机调度，不需要 App Group、推送证书或付费开发者能力；仅在用户为某条记录启用提醒时请求系统权限。
 
 ## 分层约束
 

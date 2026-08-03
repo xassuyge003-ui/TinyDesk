@@ -42,6 +42,48 @@ public enum ImportantDateLeapDayPolicy: String, Codable, Sendable, CaseIterable 
     case march1
 }
 
+public enum ImportantDateLunarLeapMonthPolicy: String, Codable, Sendable, CaseIterable {
+    /// 在没有对应闰月的农历年份，按同名普通月庆祝。
+    case regularMonthFallback
+    /// 仅在存在对应闰月的年份庆祝。
+    case strictLeapMonth
+}
+
+public enum SystemCalendarLinkAuthority: String, Codable, Sendable, CaseIterable {
+    /// 系统日历是标题、日期和重复规则的来源。
+    case systemCalendar
+    /// TinyDesk 是来源，修改后会写回已关联的系统日历事件。
+    case tinyDesk
+}
+
+public struct SystemCalendarLink: Codable, Sendable, Equatable {
+    public var calendarIdentifier: String
+    public var calendarTitle: String
+    public var eventIdentifier: String
+    public var externalIdentifier: String?
+    public var authority: SystemCalendarLinkAuthority
+    public var isReadOnly: Bool
+    public var lastSyncedAt: Date?
+
+    public init(
+        calendarIdentifier: String,
+        calendarTitle: String,
+        eventIdentifier: String,
+        externalIdentifier: String? = nil,
+        authority: SystemCalendarLinkAuthority,
+        isReadOnly: Bool,
+        lastSyncedAt: Date? = nil
+    ) {
+        self.calendarIdentifier = calendarIdentifier
+        self.calendarTitle = calendarTitle
+        self.eventIdentifier = eventIdentifier
+        self.externalIdentifier = externalIdentifier
+        self.authority = authority
+        self.isReadOnly = isReadOnly
+        self.lastSyncedAt = lastSyncedAt
+    }
+}
+
 public enum ImportantDateViewMode: String, Codable, Sendable, CaseIterable {
     case calendar
     case list
@@ -82,21 +124,45 @@ public struct ImportantDateComponents: Codable, Sendable, Equatable {
         from referenceDate: Date = Date(),
         calendar: Calendar = .current
     ) -> Date? {
-        guard calendarSystem == .gregorian else { return nil }
         let referenceYear = calendar.component(.year, from: referenceDate)
-        let candidateYears = year.map { [$0] } ?? Array(referenceYear...(referenceYear + 8))
-
-        for candidateYear in candidateYears {
-            var components = DateComponents()
-            components.calendar = calendar
-            components.timeZone = calendar.timeZone
-            components.year = candidateYear
-            components.month = month
-            components.day = day
-            guard let value = calendar.date(from: components) else { continue }
-            let resolved = calendar.dateComponents([.year, .month, .day], from: value)
-            if resolved.year == candidateYear, resolved.month == month, resolved.day == day {
-                return calendar.startOfDay(for: value)
+        switch calendarSystem {
+        case .gregorian:
+            let candidateYears = year.map { [$0] } ?? Array(referenceYear...(referenceYear + 8))
+            for candidateYear in candidateYears {
+                var components = DateComponents()
+                components.calendar = calendar
+                components.timeZone = calendar.timeZone
+                components.year = candidateYear
+                components.month = month
+                components.day = day
+                guard let value = calendar.date(from: components) else { continue }
+                let resolved = calendar.dateComponents([.year, .month, .day], from: value)
+                if resolved.year == candidateYear, resolved.month == month, resolved.day == day {
+                    return calendar.startOfDay(for: value)
+                }
+            }
+        case .chineseLunar:
+            if let year {
+                return ChineseLunarCalendar.occurrence(
+                    inLunarYear: year,
+                    month: month,
+                    day: day,
+                    isLeapMonth: isLeapMonth,
+                    leapMonthPolicy: .regularMonthFallback,
+                    calendar: calendar
+                )
+            }
+            for candidateYear in referenceYear...(referenceYear + 8) {
+                if let value = ChineseLunarCalendar.occurrence(
+                    inGregorianYear: candidateYear,
+                    month: month,
+                    day: day,
+                    isLeapMonth: isLeapMonth,
+                    leapMonthPolicy: .regularMonthFallback,
+                    calendar: calendar
+                ) {
+                    return value
+                }
             }
         }
         return nil
@@ -113,6 +179,10 @@ public struct ImportantDateEvent: Identifiable, Codable, Sendable, Equatable {
     public var notes: String
     public var isPinned: Bool
     public var leapDayPolicy: ImportantDateLeapDayPolicy
+    /// 缺失时按 v2.0 的默认规则“普通月补过”处理，兼容 schema 2 工作区。
+    public var lunarLeapMonthPolicy: ImportantDateLunarLeapMonthPolicy?
+    /// 可选关联信息，避免旧版工作区因新增字段无法读取。
+    public var systemCalendarLink: SystemCalendarLink?
     public var reminderDaysBefore: Int?
     public var reminderHour: Int
     public let createdAt: Date
@@ -128,6 +198,8 @@ public struct ImportantDateEvent: Identifiable, Codable, Sendable, Equatable {
         notes: String = "",
         isPinned: Bool = false,
         leapDayPolicy: ImportantDateLeapDayPolicy = .february28,
+        lunarLeapMonthPolicy: ImportantDateLunarLeapMonthPolicy? = nil,
+        systemCalendarLink: SystemCalendarLink? = nil,
         reminderDaysBefore: Int? = nil,
         reminderHour: Int = 9,
         createdAt: Date = Date(),
@@ -142,6 +214,8 @@ public struct ImportantDateEvent: Identifiable, Codable, Sendable, Equatable {
         self.notes = notes
         self.isPinned = isPinned
         self.leapDayPolicy = leapDayPolicy
+        self.lunarLeapMonthPolicy = lunarLeapMonthPolicy
+        self.systemCalendarLink = systemCalendarLink
         self.reminderDaysBefore = reminderDaysBefore
         self.reminderHour = min(max(reminderHour, 0), 23)
         self.createdAt = createdAt
@@ -149,8 +223,19 @@ public struct ImportantDateEvent: Identifiable, Codable, Sendable, Equatable {
     }
 
     public func occurrence(inYear year: Int, calendar: Calendar = .current) -> Date? {
-        guard date.calendarSystem == .gregorian else { return nil }
         if recurrence == .yearly, let startYear, year < startYear { return nil }
+
+        if date.calendarSystem == .chineseLunar {
+            return ChineseLunarCalendar.occurrence(
+                inGregorianYear: year,
+                month: date.month,
+                day: date.day,
+                isLeapMonth: date.isLeapMonth,
+                leapMonthPolicy: resolvedLunarLeapMonthPolicy,
+                calendar: calendar
+            )
+        }
+
         var components = DateComponents()
         components.calendar = calendar
         components.timeZone = calendar.timeZone
@@ -173,6 +258,16 @@ public struct ImportantDateEvent: Identifiable, Codable, Sendable, Equatable {
 
     public func storedOccurrence(calendar: Calendar = .current) -> Date? {
         guard let year = date.year else { return nil }
+        if date.calendarSystem == .chineseLunar {
+            return ChineseLunarCalendar.occurrence(
+                inLunarYear: year,
+                month: date.month,
+                day: date.day,
+                isLeapMonth: date.isLeapMonth,
+                leapMonthPolicy: resolvedLunarLeapMonthPolicy,
+                calendar: calendar
+            )
+        }
         return occurrence(inYear: year, calendar: calendar)
     }
 
@@ -197,7 +292,6 @@ public struct ImportantDateEvent: Identifiable, Codable, Sendable, Equatable {
     }
 
     public func occurs(on day: Date, calendar: Calendar = .current) -> Bool {
-        guard date.calendarSystem == .gregorian else { return false }
         let components = calendar.dateComponents([.year, .month, .day], from: day)
         if recurrence == .yearly {
             guard let year = components.year else { return false }
@@ -213,6 +307,14 @@ public struct ImportantDateEvent: Identifiable, Codable, Sendable, Equatable {
         let year = calendar.component(.year, from: occurrence)
         let value = year - startYear
         return value > 0 ? value : nil
+    }
+
+    public var resolvedLunarLeapMonthPolicy: ImportantDateLunarLeapMonthPolicy {
+        lunarLeapMonthPolicy ?? .regularMonthFallback
+    }
+
+    public var isSystemCalendarManaged: Bool {
+        systemCalendarLink?.authority == .systemCalendar
     }
 }
 
@@ -300,6 +402,8 @@ public struct DesktopCard: Identifiable, Codable, Sendable, Equatable {
     public var importantDateCategoryFilter: ImportantDateCategory?
     public var featuredImportantDateID: UUID?
     public var isPositionLocked: Bool?
+    /// 快捷便签可使用真正的 floating window；缺失时保持旧版桌面层行为。
+    public var isAlwaysOnTop: Bool?
     public var isVisible: Bool
     public var frame: DesktopCardFrame?
     public let createdAt: Date
@@ -319,6 +423,7 @@ public struct DesktopCard: Identifiable, Codable, Sendable, Equatable {
         importantDateCategoryFilter: ImportantDateCategory? = nil,
         featuredImportantDateID: UUID? = nil,
         isPositionLocked: Bool? = false,
+        isAlwaysOnTop: Bool? = false,
         isVisible: Bool = true,
         frame: DesktopCardFrame? = nil,
         createdAt: Date = Date(),
@@ -337,6 +442,7 @@ public struct DesktopCard: Identifiable, Codable, Sendable, Equatable {
         self.importantDateCategoryFilter = importantDateCategoryFilter
         self.featuredImportantDateID = featuredImportantDateID
         self.isPositionLocked = isPositionLocked
+        self.isAlwaysOnTop = isAlwaysOnTop
         self.isVisible = isVisible
         self.frame = frame
         self.createdAt = createdAt
@@ -419,10 +525,14 @@ public struct DesktopCard: Identifiable, Codable, Sendable, Equatable {
     public var resolvedIsPositionLocked: Bool {
         isPositionLocked ?? false
     }
+
+    public var resolvedIsAlwaysOnTop: Bool {
+        isAlwaysOnTop ?? false
+    }
 }
 
 public struct TinyDeskWorkspace: Codable, Sendable, Equatable {
-    public static let currentSchemaVersion = 2
+    public static let currentSchemaVersion = 3
 
     public var schemaVersion: Int
     public var cards: [DesktopCard]
@@ -495,6 +605,13 @@ public struct TinyDeskWorkspace: Codable, Sendable, Equatable {
                 migrated.importantDates.append(event)
                 migrated.cards[index].featuredImportantDateID = event.id
                 migrated.cards[index].importantDateViewMode = .calendar
+            }
+        }
+
+        if migrated.schemaVersion < 3 {
+            // 新增字段均为可选并带默认解析，不改变旧卡片及重要日期的既有行为。
+            for index in migrated.cards.indices {
+                migrated.cards[index].isAlwaysOnTop = false
             }
         }
 

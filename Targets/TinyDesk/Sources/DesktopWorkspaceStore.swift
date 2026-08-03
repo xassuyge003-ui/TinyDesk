@@ -118,6 +118,75 @@ final class DesktopWorkspaceStore: ObservableObject {
         refreshImportantDateNotifications()
     }
 
+    func hasImportedSystemCalendarCandidate(_ candidate: SystemCalendarCandidate) -> Bool {
+        workspace.importantDates.contains { event in
+            guard let link = event.systemCalendarLink,
+                  link.calendarIdentifier == candidate.calendarIdentifier
+            else { return false }
+            if let externalIdentifier = candidate.externalIdentifier,
+               !externalIdentifier.isEmpty {
+                return link.externalIdentifier == externalIdentifier
+            }
+            return link.eventIdentifier == candidate.eventIdentifier
+        }
+    }
+
+    @discardableResult
+    func importSystemCalendarCandidates(
+        _ candidates: [SystemCalendarCandidate],
+        using service: SystemCalendarService
+    ) -> Int {
+        let newEvents = candidates
+            .filter { !hasImportedSystemCalendarCandidate($0) }
+            .map(service.makeImportantDate(from:))
+        guard !newEvents.isEmpty else { return 0 }
+
+        var next = workspace
+        next.importantDates.append(contentsOf: newEvents)
+        workspace = next
+        scheduleSave()
+        refreshImportantDateNotifications()
+        return newEvents.count
+    }
+
+    func exportImportantDate(
+        _ id: UUID,
+        to calendarIdentifier: String,
+        using service: SystemCalendarService
+    ) {
+        guard let event = workspace.importantDates.first(where: { $0.id == id }) else { return }
+        do {
+            let updated = try service.export(event, to: calendarIdentifier)
+            updateImportantDate(id) { $0 = updated }
+        } catch {
+            storageMessage = "无法关联系统日历：\(error.localizedDescription)"
+        }
+    }
+
+    func removeSystemCalendarLink(_ id: UUID, using service: SystemCalendarService) {
+        updateImportantDate(id) { $0 = service.removeLink(from: $0) }
+    }
+
+    func synchronizeSystemCalendar(using service: SystemCalendarService) async {
+        guard service.hasFullAccess else { return }
+        var next = workspace
+        var changed = false
+
+        for index in next.importantDates.indices where next.importantDates[index].systemCalendarLink != nil {
+            let original = next.importantDates[index]
+            guard let refreshed = service.refreshLinkedEvent(original) else { continue }
+            if refreshed != original {
+                next.importantDates[index] = refreshed
+                changed = true
+            }
+        }
+
+        guard changed else { return }
+        workspace = next
+        scheduleSave()
+        refreshImportantDateNotifications()
+    }
+
     func updateFrame(_ frame: DesktopCardFrame, for id: UUID) {
         guard let index = workspace.cards.firstIndex(where: { $0.id == id }),
               workspace.cards[index].frame != frame

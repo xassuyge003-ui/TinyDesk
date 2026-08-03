@@ -5,7 +5,10 @@ import TinyDeskCore
 struct ControlCenterView: View {
     @EnvironmentObject private var store: DesktopWorkspaceStore
     @EnvironmentObject private var windowManager: DesktopWindowManager
+    @EnvironmentObject private var settings: TinyDeskSettings
+    @EnvironmentObject private var calendarService: SystemCalendarService
     @State private var pendingDeletion: DesktopCard?
+    @State private var showsSettings = false
 
     private let columns = [
         GridItem(.adaptive(minimum: 245, maximum: 360), spacing: 14),
@@ -48,6 +51,11 @@ struct ControlCenterView: View {
         } message: { card in
             Text("该\(card.kind.displayName)及其中内容会从本机工作区删除，此操作无法撤销。")
         }
+        .sheet(isPresented: $showsSettings) {
+            TinyDeskSettingsView()
+                .environmentObject(settings)
+                .environmentObject(calendarService)
+        }
     }
 
     private var hero: some View {
@@ -84,6 +92,9 @@ struct ControlCenterView: View {
                 }
                 Button("全部隐藏", systemImage: "eye.slash") {
                     store.hideAll()
+                }
+                Button("设置", systemImage: "gearshape") {
+                    showsSettings = true
                 }
             }
             .buttonStyle(.bordered)
@@ -169,7 +180,7 @@ struct ControlCenterView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("完全本地 · 无 App Group · 无付费能力")
                     .font(.caption.weight(.semibold))
-                Text("便签、日期和待办只写入应用沙盒中的 workspace.json。")
+                Text("便签、日期和待办写入本地 workspace.json；系统日历只在你主动关联后访问。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

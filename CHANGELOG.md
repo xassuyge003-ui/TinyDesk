@@ -5,6 +5,25 @@
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-03
+
+### Added
+
+- 重要日期支持农历生日、闰月标记和普通月补过/仅闰月两种规则；工作区升级至 schema 3，并保持旧数据可读。
+- 系统日历导入、来源关联、手动同步和本地事件导出；系统日历来源的标题、日期、重复规则由 EventKit 保持一致。
+- 控制中心右上角设置、开机自启、可录制的全局快捷键（默认 `⌥⌘N`），以及当前屏幕顶部中央的新建快速便签。
+- 快速便签可单独置顶或取消置顶；置顶状态重启后保留。
+- `scripts/build-dmg.sh` 生成并校验 universal DMG、ad-hoc 签名及 SHA-256；版本标签工作流自动发布安装包。
+
+### Changed
+
+- 重要日期编辑器增加公历/农历切换与系统日历工作流；农历转换保持在纯 Foundation 核心层。
+- 核心模型与持久化契约自检扩展至 50 项，涵盖闰月补过、日历关联与置顶兼容性。
+
+### Security
+
+- 日历权限仅在用户主动导入、关联或同步时请求；日历数据始终经本机 EventKit 处理。
+
 ## [1.1.1] - 2026-08-02
 
 ### Fixed
@@ -67,7 +86,8 @@
 
 - 所有系统扩展、联网聚合以及跨进程共享能力。
 
-[Unreleased]: https://github.com/xassuyge003-ui/TinyDesk/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/xassuyge003-ui/TinyDesk/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/xassuyge003-ui/TinyDesk/compare/v1.1.1...v2.0.0
 [1.1.1]: https://github.com/xassuyge003-ui/TinyDesk/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/xassuyge003-ui/TinyDesk/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v1.0.0

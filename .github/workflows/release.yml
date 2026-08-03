@@ -1,0 +1,52 @@
+name: release
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish-dmg:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Select Xcode
+        run: sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+      - name: Install XcodeGen
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: brew install xcodegen
+      - name: Run core self-tests
+        working-directory: TinyDeskCore
+        run: swift run -c release TinyDeskSelfTests
+      - name: Verify release tag matches app version
+        env:
+          VERSION_TAG: ${{ github.ref_name }}
+        run: |
+          version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Targets/TinyDesk/SupportingFiles/Info.plist)"
+          test "v${version}" = "$VERSION_TAG" || {
+            echo "Release tag $VERSION_TAG does not match Info.plist version v${version}." >&2
+            exit 1
+          }
+      - name: Build universal DMG
+        run: ./scripts/build-dmg.sh
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION_TAG: ${{ github.ref_name }}
+        run: |
+          version="${VERSION_TAG#v}"
+          dmg="dist/TinyDesk-${version}.dmg"
+          checksum="dist/TinyDesk-${version}-SHA256.txt"
+          notes="Universal macOS DMG for TinyDesk ${VERSION_TAG}.\n\nThis build is ad-hoc signed, not Developer ID-notarized. On first launch, Control-click TinyDesk.app and choose Open, then confirm in macOS if prompted."
+          if gh release view "$VERSION_TAG" >/dev/null 2>&1; then
+            gh release upload "$VERSION_TAG" "$dmg" "$checksum" --clobber
+          else
+            gh release create "$VERSION_TAG" "$dmg" "$checksum" \
+              --title "TinyDesk ${VERSION_TAG}" \
+              --notes "$notes"
+          fi

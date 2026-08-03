@@ -46,13 +46,21 @@ enum DesktopCardSizePreset: String, CaseIterable, Identifiable {
 @MainActor
 final class DesktopWindowManager: ObservableObject {
     private let store: DesktopWorkspaceStore
+    private let settings: TinyDeskSettings
+    private let calendarService: SystemCalendarService
     private var panels: [UUID: DesktopCardPanel] = [:]
     private var delegates: [UUID: DesktopPanelDelegate] = [:]
     private var cancellables: Set<AnyCancellable> = []
     private var didStart = false
 
-    init(store: DesktopWorkspaceStore) {
+    init(
+        store: DesktopWorkspaceStore,
+        settings: TinyDeskSettings,
+        calendarService: SystemCalendarService
+    ) {
         self.store = store
+        self.settings = settings
+        self.calendarService = calendarService
     }
 
     func start() {
@@ -73,6 +81,17 @@ final class DesktopWindowManager: ObservableObject {
             }
             .store(in: &cancellables)
 
+        GlobalShortcutManager.shared.onShortcut = { [weak self] in
+            Task { @MainActor in self?.createQuickSticky() }
+        }
+        _ = GlobalShortcutManager.shared.register(settings.quickNoteShortcut)
+        settings.$quickNoteShortcut
+            .receive(on: DispatchQueue.main)
+            .sink { shortcut in
+                _ = GlobalShortcutManager.shared.register(shortcut)
+            }
+            .store(in: &cancellables)
+
         reconcileWindows()
     }
 
@@ -80,6 +99,29 @@ final class DesktopWindowManager: ObservableObject {
         let card = store.addCard(kind: kind)
         reconcileWindows()
         focus(card.id)
+    }
+
+    func createQuickSticky() {
+        let screen = screenContainingMouse() ?? NSScreen.main ?? NSScreen.screens.first
+        let size = DesktopCardSizePreset.medium.size
+        let frame = quickStickyFrame(size: size, screen: screen)
+        let card = store.addCard(kind: .sticky)
+        store.updateCard(card.id) {
+            $0.title = "快速便签"
+            $0.noteText = ""
+            $0.noteRichTextData = nil
+            $0.isAlwaysOnTop = settings.quickNotesStartPinned
+            $0.frame = DesktopCardFrame(
+                x: frame.origin.x,
+                y: frame.origin.y,
+                width: frame.width,
+                height: frame.height,
+                screenIdentifier: screen?.tinyDeskIdentifier
+            )
+        }
+        reconcileWindows()
+        focus(card.id)
+        focusTextEditor(in: panels[card.id])
     }
 
     func show(_ id: UUID, focus: Bool = false) {
@@ -99,7 +141,7 @@ final class DesktopWindowManager: ObservableObject {
         }
         reconcileWindows()
         guard let panel = panels[id] else { return }
-        panel.level = Self.desktopLevel
+        applyWindowLevel(panel, for: id)
         NSApplication.shared.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
     }
@@ -142,15 +184,14 @@ final class DesktopWindowManager: ObservableObject {
         _ = store.persistNow()
     }
 
-    fileprivate func panelDidBecomeKey(_ panel: NSWindow) {
-        // Editing must never promote a card above normal application windows.
-        panel.level = Self.desktopLevel
+    fileprivate func panelDidBecomeKey(_ panel: NSWindow, cardID: UUID) {
+        applyWindowLevel(panel, for: cardID)
     }
 
-    fileprivate func panelDidResignKey(_ panel: NSWindow) {
+    fileprivate func panelDidResignKey(_ panel: NSWindow, cardID: UUID) {
         DispatchQueue.main.async { [weak panel] in
             guard let panel, !panel.isKeyWindow else { return }
-            panel.level = Self.desktopLevel
+            self.applyWindowLevel(panel, for: cardID)
         }
     }
 
@@ -181,9 +222,9 @@ final class DesktopWindowManager: ObservableObject {
         for (index, card) in store.cards.enumerated() {
             let panel = panels[card.id] ?? makePanel(for: card, index: index)
             applyPositionLock(card.resolvedIsPositionLocked, to: panel)
+            applyWindowLevel(panel, for: card.id)
             if card.isVisible {
                 if !panel.isVisible {
-                    panel.level = Self.desktopLevel
                     panel.orderFront(nil)
                 }
             } else if panel.isVisible {
@@ -210,10 +251,10 @@ final class DesktopWindowManager: ObservableObject {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
-        panel.isFloatingPanel = false
+        panel.isFloatingPanel = card.resolvedIsAlwaysOnTop
         panel.becomesKeyOnlyIfNeeded = false
         panel.acceptsMouseMovedEvents = true
-        panel.level = Self.desktopLevel
+        panel.level = desiredWindowLevel(for: card)
         panel.animationBehavior = .utilityWindow
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.tabbingMode = .disallowed
@@ -233,6 +274,8 @@ final class DesktopWindowManager: ObservableObject {
         let rootView = DesktopCardHostView(cardID: card.id)
             .environmentObject(store)
             .environmentObject(self)
+            .environmentObject(settings)
+            .environmentObject(calendarService)
             .ignoresSafeArea()
         panel.contentView = DesktopCardHostingView(rootView: rootView)
 
@@ -246,6 +289,43 @@ final class DesktopWindowManager: ObservableObject {
     private func applyPositionLock(_ isLocked: Bool, to panel: NSPanel) {
         panel.isMovable = !isLocked
         panel.isMovableByWindowBackground = !isLocked
+    }
+
+    private func applyWindowLevel(_ panel: NSWindow, for cardID: UUID) {
+        guard let card = store.card(withID: cardID) else {
+            panel.level = Self.desktopLevel
+            return
+        }
+        panel.level = desiredWindowLevel(for: card)
+        if let panel = panel as? NSPanel {
+            panel.isFloatingPanel = card.resolvedIsAlwaysOnTop
+        }
+    }
+
+    private func desiredWindowLevel(for card: DesktopCard) -> NSWindow.Level {
+        card.resolvedIsAlwaysOnTop ? .floating : Self.desktopLevel
+    }
+
+    private func screenContainingMouse() -> NSScreen? {
+        let point = NSEvent.mouseLocation
+        return NSScreen.screens.first { $0.frame.contains(point) }
+    }
+
+    private func quickStickyFrame(size: NSSize, screen: NSScreen?) -> NSRect {
+        let visible = screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        return NSRect(
+            x: visible.midX - size.width / 2,
+            y: visible.maxY - size.height - 14,
+            width: size.width,
+            height: size.height
+        )
+    }
+
+    private func focusTextEditor(in panel: NSPanel?) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            guard let panel, let editor = panel.contentView?.firstTextView else { return }
+            panel.makeFirstResponder(editor)
+        }
     }
 
     private func keepWindowsOnScreen() {
@@ -349,12 +429,12 @@ private final class DesktopPanelDelegate: NSObject, NSWindowDelegate {
 
     func windowDidBecomeKey(_ notification: Notification) {
         guard let panel = notification.object as? NSWindow else { return }
-        manager?.panelDidBecomeKey(panel)
+        manager?.panelDidBecomeKey(panel, cardID: cardID)
     }
 
     func windowDidResignKey(_ notification: Notification) {
         guard let panel = notification.object as? NSWindow else { return }
-        manager?.panelDidResignKey(panel)
+        manager?.panelDidResignKey(panel, cardID: cardID)
     }
 
     func windowDidMove(_ notification: Notification) {
@@ -371,5 +451,15 @@ private final class DesktopPanelDelegate: NSObject, NSWindowDelegate {
 private extension NSScreen {
     var tinyDeskIdentifier: String? {
         (deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.stringValue
+    }
+}
+
+private extension NSView {
+    var firstTextView: NSTextView? {
+        if let textView = self as? NSTextView { return textView }
+        for subview in subviews {
+            if let textView = subview.firstTextView { return textView }
+        }
+        return nil
     }
 }

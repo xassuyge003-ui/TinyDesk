@@ -40,6 +40,14 @@ struct DesktopCardHostView: View {
                     Button("在桌面隐藏", systemImage: "eye.slash") {
                         windowManager.hide(cardID)
                     }
+                    if card.kind == .sticky {
+                        Button(
+                            card.resolvedIsAlwaysOnTop ? "取消置顶" : "置顶显示",
+                            systemImage: card.resolvedIsAlwaysOnTop ? "pin.slash" : "pin"
+                        ) {
+                            toggleAlwaysOnTop(for: card)
+                        }
+                    }
                     Button("恢复默认位置", systemImage: "arrow.counterclockwise") {
                         windowManager.resetPosition(cardID)
                     }
@@ -118,6 +126,20 @@ struct DesktopCardHostView: View {
 
             Spacer(minLength: 0)
 
+            if card.kind == .sticky {
+                Button {
+                    toggleAlwaysOnTop(for: card)
+                } label: {
+                    Image(systemName: card.resolvedIsAlwaysOnTop ? "pin.fill" : "pin")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(card.resolvedIsAlwaysOnTop ? card.theme.palette.accent : .secondary)
+                .help(card.resolvedIsAlwaysOnTop ? "取消置顶：回到桌面层" : "置顶：显示在普通应用上方")
+            }
+
             Menu {
                 sizePresetButtons(for: card)
             } label: {
@@ -194,6 +216,12 @@ struct DesktopCardHostView: View {
     private func togglePositionLock(for card: DesktopCard) {
         store.updateCard(card.id) {
             $0.isPositionLocked = !card.resolvedIsPositionLocked
+        }
+    }
+
+    private func toggleAlwaysOnTop(for card: DesktopCard) {
+        store.updateCard(card.id) {
+            $0.isAlwaysOnTop = !card.resolvedIsAlwaysOnTop
         }
     }
 
@@ -451,11 +479,13 @@ private struct RichTextFormatButton: View {
 private struct CountdownCardContent: View {
     @EnvironmentObject private var store: DesktopWorkspaceStore
     @EnvironmentObject private var windowManager: DesktopWindowManager
+    @EnvironmentObject private var calendarService: SystemCalendarService
     @State private var displayedMonth = Calendar.current.date(
         from: Calendar.current.dateComponents([.year, .month], from: Date())
     ) ?? Date()
     @State private var selectedDay = Date()
     @State private var editorContext: ImportantDateEditorContext?
+    @State private var showsCalendarSync = false
 
     let card: DesktopCard
     let availableSize: CGSize
@@ -500,8 +530,14 @@ private struct CountdownCardContent: View {
             ImportantDateEditorView(
                 event: context.event,
                 onSave: save,
-                onDelete: { event in store.deleteImportantDate(event.id) }
+                onDelete: { event in store.deleteImportantDate(event.id) },
+                onUnlink: { event in store.removeSystemCalendarLink(event.id, using: calendarService) }
             )
+        }
+        .sheet(isPresented: $showsCalendarSync) {
+            SystemCalendarSyncView()
+                .environmentObject(store)
+                .environmentObject(calendarService)
         }
     }
 
@@ -522,6 +558,21 @@ private struct CountdownCardContent: View {
 
             categoryFilterMenu(controlSize: controlSize)
 
+            Spacer(minLength: 0)
+
+            if !ultraCompact {
+                Button {
+                    showsCalendarSync = true
+                } label: {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: controlSize, height: controlSize)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("导入、关联和同步系统日历")
+            }
+
             Button {
                 editorContext = ImportantDateEditorContext(event: nil)
             } label: {
@@ -532,8 +583,6 @@ private struct CountdownCardContent: View {
             }
             .buttonStyle(.plain)
             .help("添加重要日期")
-
-            Spacer(minLength: 0)
 
             Button {
                 store.updateCard(card.id) {
@@ -644,6 +693,10 @@ private struct CountdownCardContent: View {
                     windowManager.hide(card.id)
                 }
             }
+            Divider()
+            Button("系统日历", systemImage: "calendar.badge.clock") {
+                showsCalendarSync = true
+            }
         } label: {
             Image(systemName: "ellipsis")
                 .frame(width: controlSize, height: controlSize)
@@ -696,6 +749,7 @@ private struct CountdownCardContent: View {
                 store.updateCard(card.id) { $0.featuredImportantDateID = event.id }
             }
         }
+        Task { await store.synchronizeSystemCalendar(using: calendarService) }
     }
 }
 
@@ -768,6 +822,11 @@ private struct ImportantDateRow: View {
                         if event.reminderDaysBefore != nil {
                             Image(systemName: "bell.fill").font(.system(size: 8)).foregroundStyle(.secondary)
                         }
+                        if event.systemCalendarLink != nil {
+                            Image(systemName: "calendar.badge.checkmark")
+                                .font(.system(size: 8))
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     Text(detailText)
                         .font(.system(size: compact ? 9 : 10, design: .rounded))
@@ -810,7 +869,14 @@ private struct ImportantDateRow: View {
 
     private var detailText: String {
         let dateText: String
-        if event.recurrence == .yearly {
+        if event.date.calendarSystem == .chineseLunar {
+            let lunarText = ChineseLunarCalendar.displayText(
+                month: event.date.month,
+                day: event.date.day,
+                isLeapMonth: event.date.isLeapMonth
+            )
+            dateText = "\(lunarText) · \(event.recurrence == .yearly ? "每年" : "一次")"
+        } else if event.recurrence == .yearly {
             dateText = "\(event.date.month)月\(event.date.day)日 · 每年"
         } else if let occurrence = event.storedOccurrence() {
             dateText = occurrence.formatted(date: .abbreviated, time: .omitted)
@@ -975,10 +1041,17 @@ private struct ImportantDateEditorView: View {
     let originalEvent: ImportantDateEvent?
     let onSave: (ImportantDateEvent) -> Void
     let onDelete: (ImportantDateEvent) -> Void
+    let onUnlink: (ImportantDateEvent) -> Void
 
     @State private var title: String
     @State private var category: ImportantDateCategory
+    @State private var calendarSystem: ImportantDateCalendarSystem
     @State private var selectedDate: Date
+    @State private var lunarYear: Int
+    @State private var lunarMonth: Int
+    @State private var lunarDay: Int
+    @State private var lunarIsLeapMonth: Bool
+    @State private var lunarLeapMonthPolicy: ImportantDateLunarLeapMonthPolicy
     @State private var recurrence: ImportantDateRecurrence
     @State private var tracksStartYear: Bool
     @State private var startYear: Int
@@ -993,11 +1066,13 @@ private struct ImportantDateEditorView: View {
     init(
         event: ImportantDateEvent?,
         onSave: @escaping (ImportantDateEvent) -> Void,
-        onDelete: @escaping (ImportantDateEvent) -> Void
+        onDelete: @escaping (ImportantDateEvent) -> Void,
+        onUnlink: @escaping (ImportantDateEvent) -> Void
     ) {
         originalEvent = event
         self.onSave = onSave
         self.onDelete = onDelete
+        self.onUnlink = onUnlink
 
         let calendar = Calendar.current
         let fallbackDate = calendar.date(byAdding: .day, value: 30, to: Date()) ?? Date()
@@ -1006,10 +1081,18 @@ private struct ImportantDateEditorView: View {
             calendar: calendar
         ) ?? event?.relevantOccurrence() ?? fallbackDate
         let resolvedStartYear = event?.startYear ?? calendar.component(.year, from: resolvedDate)
+        let lunarComponents = ChineseLunarCalendar.components(from: resolvedDate, calendar: calendar)
+        let originalLunarDate = event?.date.calendarSystem == .chineseLunar ? event?.date : nil
 
         _title = State(initialValue: event?.title ?? "")
         _category = State(initialValue: event?.category ?? .other)
+        _calendarSystem = State(initialValue: event?.date.calendarSystem ?? .gregorian)
         _selectedDate = State(initialValue: resolvedDate)
+        _lunarYear = State(initialValue: originalLunarDate?.year ?? lunarComponents.lunarYear)
+        _lunarMonth = State(initialValue: originalLunarDate?.month ?? lunarComponents.month)
+        _lunarDay = State(initialValue: originalLunarDate?.day ?? lunarComponents.day)
+        _lunarIsLeapMonth = State(initialValue: originalLunarDate?.isLeapMonth ?? lunarComponents.isLeapMonth)
+        _lunarLeapMonthPolicy = State(initialValue: event?.resolvedLunarLeapMonthPolicy ?? .regularMonthFallback)
         _recurrence = State(initialValue: event?.recurrence ?? .yearly)
         _tracksStartYear = State(initialValue: event?.startYear != nil)
         _startYear = State(initialValue: resolvedStartYear)
@@ -1040,16 +1123,30 @@ private struct ImportantDateEditorView: View {
             Form {
                 Section("基本信息") {
                     TextField("名称", text: $title)
+                        .disabled(isSystemCalendarManaged)
                     Picker("分类", selection: $category) {
                         ForEach(ImportantDateCategory.allCases, id: \.self) { value in
                             Label(value.displayName, systemImage: value.symbolName).tag(value)
                         }
                     }
-                    DatePicker("日期", selection: $selectedDate, displayedComponents: [.date])
+                    Picker("日历类型", selection: $calendarSystem) {
+                        Text("公历").tag(ImportantDateCalendarSystem.gregorian)
+                        Text("农历").tag(ImportantDateCalendarSystem.chineseLunar)
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(isSystemCalendarManaged)
+                    if calendarSystem == .gregorian {
+                        DatePicker("日期", selection: $selectedDate, displayedComponents: [.date])
+                            .disabled(isSystemCalendarManaged)
+                    } else {
+                        lunarDateFields
+                            .disabled(isSystemCalendarManaged)
+                    }
                     Picker("重复", selection: $recurrence) {
                         Text("仅一次").tag(ImportantDateRecurrence.once)
                         Text("每年").tag(ImportantDateRecurrence.yearly)
                     }
+                    .disabled(isSystemCalendarManaged)
                     Toggle("置顶显示", isOn: $isPinned)
                 }
 
@@ -1062,7 +1159,7 @@ private struct ImportantDateEditorView: View {
                     }
                 }
 
-                if recurrence == .yearly && selectedMonth == 2 && selectedDay == 29 {
+                if calendarSystem == .gregorian && recurrence == .yearly && selectedMonth == 2 && selectedDay == 29 {
                     Section("非闰年规则") {
                         Picker("按哪一天提醒", selection: $leapDayPolicy) {
                             Text("2月28日").tag(ImportantDateLeapDayPolicy.february28)
@@ -1095,11 +1192,22 @@ private struct ImportantDateEditorView: View {
                     TextEditor(text: $notes).frame(minHeight: 60)
                 }
 
-                Section {
-                    LabeledContent("日历类型", value: "公历")
-                    Text("数据结构已预留农历与闰月，农历编辑将在后续版本开放。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                if let link = originalEvent?.systemCalendarLink {
+                    Section("系统日历关联") {
+                        LabeledContent(
+                            "来源",
+                            value: "\(link.calendarTitle) · \(link.authority == .systemCalendar ? "系统日历" : "TinyDesk")"
+                        )
+                        Text(link.authority == .systemCalendar
+                            ? "标题、日期和重复规则会以系统日历为准；分类、置顶和本地提醒仍由 TinyDesk 管理。"
+                            : "TinyDesk 修改后会写回该日历。农历重复事件仅维护系统日历中的下一次公历发生日。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("解除关联") {
+                            if let originalEvent { onUnlink(originalEvent) }
+                            dismiss()
+                        }
+                    }
                 }
 
                 if originalEvent != nil {
@@ -1113,6 +1221,14 @@ private struct ImportantDateEditorView: View {
             .formStyle(.grouped)
         }
         .frame(minWidth: 420, minHeight: 570)
+        .onChange(of: calendarSystem) { _, newValue in
+            guard newValue == .chineseLunar else { return }
+            let components = ChineseLunarCalendar.components(from: selectedDate)
+            lunarYear = components.lunarYear
+            lunarMonth = components.month
+            lunarDay = components.day
+            lunarIsLeapMonth = components.isLeapMonth
+        }
         .confirmationDialog(
             "删除“\(originalEvent?.title ?? "重要日期")”？",
             isPresented: $confirmsDeletion,
@@ -1135,13 +1251,86 @@ private struct ImportantDateEditorView: View {
     private var currentYear: Int { Calendar.current.component(.year, from: Date()) }
     private var selectedMonth: Int { Calendar.current.component(.month, from: selectedDate) }
     private var selectedDay: Int { Calendar.current.component(.day, from: selectedDate) }
+    private var isSystemCalendarManaged: Bool { originalEvent?.isSystemCalendarManaged ?? false }
+
+    @ViewBuilder
+    private var lunarDateFields: some View {
+        Picker("农历月份", selection: $lunarMonth) {
+            ForEach(1...12, id: \.self) { value in
+                Text(lunarMonthName(value)).tag(value)
+            }
+        }
+        Picker("农历日期", selection: $lunarDay) {
+            ForEach(1...30, id: \.self) { value in
+                Text(lunarDayName(value)).tag(value)
+            }
+        }
+        if recurrence == .once {
+            Stepper("农历年份：\(lunarYear)", value: $lunarYear, in: 1900...2100)
+        }
+        Toggle("这是闰月", isOn: $lunarIsLeapMonth)
+        if lunarIsLeapMonth {
+            Picker("无闰月时", selection: $lunarLeapMonthPolicy) {
+                Text("按普通月补过").tag(ImportantDateLunarLeapMonthPolicy.regularMonthFallback)
+                Text("仅在闰月提醒").tag(ImportantDateLunarLeapMonthPolicy.strictLeapMonth)
+            }
+        }
+        if let next = draftLunarEvent.relevantOccurrence() {
+            LabeledContent("下一次公历日期", value: next.formatted(date: .abbreviated, time: .omitted))
+        }
+        Text("农历小月没有所选日期时，默认按该月最后一天计算。")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    private var draftLunarEvent: ImportantDateEvent {
+        ImportantDateEvent(
+            title: title,
+            category: category,
+            date: ImportantDateComponents(
+                calendarSystem: .chineseLunar,
+                year: recurrence == .once ? lunarYear : nil,
+                month: lunarMonth,
+                day: lunarDay,
+                isLeapMonth: lunarIsLeapMonth
+            ),
+            recurrence: recurrence,
+            startYear: recurrence == .yearly && tracksStartYear ? startYear : nil,
+            lunarLeapMonthPolicy: lunarLeapMonthPolicy
+        )
+    }
+
+    private func lunarMonthName(_ month: Int) -> String {
+        let labels = ["正月", "二月", "三月", "四月", "五月", "六月", "七月", "八月", "九月", "十月", "冬月", "腊月"]
+        return labels.indices.contains(month - 1) ? labels[month - 1] : "\(month)月"
+    }
+
+    private func lunarDayName(_ day: Int) -> String {
+        let labels = [
+            "初一", "初二", "初三", "初四", "初五", "初六", "初七", "初八", "初九", "初十",
+            "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十",
+            "廿一", "廿二", "廿三", "廿四", "廿五", "廿六", "廿七", "廿八", "廿九", "三十",
+        ]
+        return labels.indices.contains(day - 1) ? labels[day - 1] : "\(day)日"
+    }
 
     private func save() {
         let now = Date()
-        let components = ImportantDateComponents(
-            gregorianDate: selectedDate,
-            includeYear: recurrence == .once
-        )
+        let components: ImportantDateComponents
+        if calendarSystem == .chineseLunar {
+            components = ImportantDateComponents(
+                calendarSystem: .chineseLunar,
+                year: recurrence == .once ? lunarYear : nil,
+                month: lunarMonth,
+                day: lunarDay,
+                isLeapMonth: lunarIsLeapMonth
+            )
+        } else {
+            components = ImportantDateComponents(
+                gregorianDate: selectedDate,
+                includeYear: recurrence == .once
+            )
+        }
         let event = ImportantDateEvent(
             id: originalEvent?.id ?? UUID(),
             title: trimmedTitle,
@@ -1154,6 +1343,8 @@ private struct ImportantDateEditorView: View {
             notes: notes.trimmingCharacters(in: .whitespacesAndNewlines),
             isPinned: isPinned,
             leapDayPolicy: leapDayPolicy,
+            lunarLeapMonthPolicy: calendarSystem == .chineseLunar ? lunarLeapMonthPolicy : nil,
+            systemCalendarLink: originalEvent?.systemCalendarLink,
             reminderDaysBefore: reminderEnabled ? reminderDaysBefore : nil,
             reminderHour: reminderHour,
             createdAt: originalEvent?.createdAt ?? now,
@@ -1161,6 +1352,238 @@ private struct ImportantDateEditorView: View {
         )
         onSave(event)
         dismiss()
+    }
+}
+
+private struct SystemCalendarSyncView: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: DesktopWorkspaceStore
+    @EnvironmentObject private var calendarService: SystemCalendarService
+
+    @State private var selectedCalendarIDs = Set<String>()
+    @State private var selectedCandidateIDs = Set<String>()
+    @State private var candidates: [SystemCalendarCandidate] = []
+    @State private var exportCalendarID = ""
+    @State private var statusMessage: String?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button("完成") { dismiss() }
+                Spacer()
+                Text("系统日历")
+                    .font(.headline)
+                Spacer()
+                Button("同步已关联项目") {
+                    Task {
+                        await store.synchronizeSystemCalendar(using: calendarService)
+                        statusMessage = "已同步关联的重要日期。"
+                    }
+                }
+                .disabled(!calendarService.hasFullAccess)
+            }
+            .padding()
+
+            Divider()
+
+            if calendarService.hasFullAccess {
+                calendarContent
+            } else {
+                accessRequest
+            }
+        }
+        .frame(minWidth: 600, minHeight: 620)
+        .onAppear { prepare() }
+    }
+
+    private var accessRequest: some View {
+        ContentUnavailableView {
+            Label("需要系统日历权限", systemImage: "calendar.badge.exclamationmark")
+        } description: {
+            Text("TinyDesk 只会在你导入、关联或同步重要日期时访问系统日历。")
+        } actions: {
+            if calendarService.canRequestAccess {
+                Button("允许访问系统日历") {
+                    Task {
+                        if await calendarService.requestFullAccess() {
+                            prepare()
+                        }
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+            } else {
+                Button("打开系统设置") {
+                    guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars") else { return }
+                    NSWorkspace.shared.open(url)
+                }
+            }
+        }
+    }
+
+    private var calendarContent: some View {
+        Form {
+            Section("导入来源") {
+                if calendarService.readableCalendars.isEmpty {
+                    Text("没有可读取的系统日历。")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(calendarService.readableCalendars) { calendar in
+                        Toggle(
+                            "\(calendar.title)（\(calendar.sourceTitle)）",
+                            isOn: calendarSelectionBinding(calendar.id)
+                        )
+                    }
+                    HStack {
+                        Button("读取过去一年至未来两年的事件", action: loadCandidates)
+                        Spacer()
+                        Text("已选 \(selectedCalendarIDs.count) 个日历")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("只导入一次性和每年重复的事件；周、月等规则不会被错误降为一次性重要日期。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("导入重要日期") {
+                if candidates.isEmpty {
+                    Text("选择日历后读取事件；已关联的事件不会重复导入。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(candidates) { candidate in
+                        Toggle(isOn: candidateSelectionBinding(candidate.id)) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(candidate.title)
+                                Text("\(candidate.calendarTitle) · \(candidate.startDate.formatted(date: .abbreviated, time: .omitted))\(candidate.recurrence == .yearly ? " · 每年" : "")")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    Button("导入所选 \(selectedCandidateIDs.count) 项") {
+                        let selected = candidates.filter { selectedCandidateIDs.contains($0.id) }
+                        let count = store.importSystemCalendarCandidates(selected, using: calendarService)
+                        statusMessage = count == 0 ? "所选事件都已关联到 TinyDesk。" : "已导入 \(count) 项，并保持系统日历关联。"
+                        loadCandidates()
+                    }
+                    .disabled(selectedCandidateIDs.isEmpty)
+                }
+            }
+
+            Section("将 TinyDesk 日期添加到系统日历") {
+                if calendarService.writableCalendars.isEmpty {
+                    Text("没有可写入的系统日历；订阅日历和生日历通常是只读的。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Picker("目标日历", selection: $exportCalendarID) {
+                        ForEach(calendarService.writableCalendars) { calendar in
+                            Text("\(calendar.title)（\(calendar.sourceTitle)）").tag(calendar.id)
+                        }
+                    }
+                    ForEach(store.importantDates) { event in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(event.title)
+                                Text(exportDetailText(for: event))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if let link = event.systemCalendarLink {
+                                Text(link.authority == .systemCalendar ? "系统来源" : "已关联")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Button("添加") {
+                                    store.exportImportantDate(event.id, to: exportCalendarID, using: calendarService)
+                                    statusMessage = "已尝试将“\(event.title)”添加到系统日历。"
+                                }
+                                .disabled(exportCalendarID.isEmpty)
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let statusMessage {
+                Section {
+                    Text(statusMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if let error = calendarService.lastError {
+                Section {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func prepare() {
+        calendarService.refreshCalendars()
+        if selectedCalendarIDs.isEmpty {
+            selectedCalendarIDs = Set(calendarService.readableCalendars.map(\.id))
+        }
+        if exportCalendarID.isEmpty {
+            exportCalendarID = calendarService.writableCalendars.first?.id ?? ""
+        }
+    }
+
+    private func loadCandidates() {
+        let calendar = Calendar.current
+        let start = calendar.date(byAdding: .year, value: -1, to: Date()) ?? Date()
+        let end = calendar.date(byAdding: .year, value: 2, to: Date()) ?? Date()
+        candidates = calendarService.fetchCandidates(
+            calendarIdentifiers: selectedCalendarIDs,
+            start: start,
+            end: end
+        ).filter { !store.hasImportedSystemCalendarCandidate($0) }
+        selectedCandidateIDs = Set(candidates.map(\.id))
+    }
+
+    private func calendarSelectionBinding(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { selectedCalendarIDs.contains(id) },
+            set: { isSelected in
+                if isSelected {
+                    selectedCalendarIDs.insert(id)
+                } else {
+                    selectedCalendarIDs.remove(id)
+                }
+            }
+        )
+    }
+
+    private func candidateSelectionBinding(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { selectedCandidateIDs.contains(id) },
+            set: { isSelected in
+                if isSelected {
+                    selectedCandidateIDs.insert(id)
+                } else {
+                    selectedCandidateIDs.remove(id)
+                }
+            }
+        )
+    }
+
+    private func exportDetailText(for event: ImportantDateEvent) -> String {
+        if event.date.calendarSystem == .chineseLunar {
+            return ChineseLunarCalendar.displayText(
+                month: event.date.month,
+                day: event.date.day,
+                isLeapMonth: event.date.isLeapMonth
+            )
+        }
+        return event.relevantOccurrence()?.formatted(date: .abbreviated, time: .omitted) ?? "日期待完善"
     }
 }
 
