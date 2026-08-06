@@ -42,9 +42,14 @@ jobs:
           version="${VERSION_TAG#v}"
           dmg="dist/TinyDesk-${version}.dmg"
           checksum="dist/TinyDesk-${version}-SHA256.txt"
+          notes_file="docs/releases/${VERSION_TAG}.md"
           notes="Universal macOS DMG for TinyDesk ${VERSION_TAG}.\n\nThis build is ad-hoc signed, not Developer ID-notarized. On first launch, Control-click TinyDesk.app and choose Open, then confirm in macOS if prompted."
           if gh release view "$VERSION_TAG" >/dev/null 2>&1; then
             gh release upload "$VERSION_TAG" "$dmg" "$checksum" --clobber
+          elif [[ -f "$notes_file" ]]; then
+            gh release create "$VERSION_TAG" "$dmg" "$checksum" \
+              --title "TinyDesk ${VERSION_TAG}" \
+              --notes-file "$notes_file"
           else
             gh release create "$VERSION_TAG" "$dmg" "$checksum" \
               --title "TinyDesk ${VERSION_TAG}" \

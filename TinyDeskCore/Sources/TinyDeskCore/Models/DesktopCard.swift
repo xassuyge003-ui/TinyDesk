@@ -4,6 +4,8 @@ public enum DesktopCardKind: String, Codable, Sendable, CaseIterable {
     case sticky
     case countdown
     case todo
+    /// 资料库桌面摘要卡片（v2.5）：只读展示文档摘要，双击打开资料库对应文档。
+    case deskRef
 }
 
 public enum DesktopCardTheme: String, Codable, Sendable, CaseIterable {
@@ -404,6 +406,15 @@ public struct DesktopCard: Identifiable, Codable, Sendable, Equatable {
     public var isPositionLocked: Bool?
     /// 快捷便签可使用真正的 floating window；缺失时保持旧版桌面层行为。
     public var isAlwaysOnTop: Bool?
+    // MARK: 资料库摘要卡片（v2.5）
+    /// 关联的资料库文档 ID；仅 `kind == .deskRef` 时有意义。
+    public var referenceDocumentID: UUID?
+    /// 文档标题缓存；资料库中改名时同步更新。
+    public var referenceDocumentTitle: String?
+    /// 文档摘要缓存。
+    public var referenceDocumentSummary: String?
+    /// 标签名缓存，用于摘要卡片展示。
+    public var referenceDocumentTags: [String]?
     public var isVisible: Bool
     public var frame: DesktopCardFrame?
     public let createdAt: Date
@@ -424,6 +435,10 @@ public struct DesktopCard: Identifiable, Codable, Sendable, Equatable {
         featuredImportantDateID: UUID? = nil,
         isPositionLocked: Bool? = false,
         isAlwaysOnTop: Bool? = false,
+        referenceDocumentID: UUID? = nil,
+        referenceDocumentTitle: String? = nil,
+        referenceDocumentSummary: String? = nil,
+        referenceDocumentTags: [String]? = nil,
         isVisible: Bool = true,
         frame: DesktopCardFrame? = nil,
         createdAt: Date = Date(),
@@ -443,6 +458,10 @@ public struct DesktopCard: Identifiable, Codable, Sendable, Equatable {
         self.featuredImportantDateID = featuredImportantDateID
         self.isPositionLocked = isPositionLocked
         self.isAlwaysOnTop = isAlwaysOnTop
+        self.referenceDocumentID = referenceDocumentID
+        self.referenceDocumentTitle = referenceDocumentTitle
+        self.referenceDocumentSummary = referenceDocumentSummary
+        self.referenceDocumentTags = referenceDocumentTags
         self.isVisible = isVisible
         self.frame = frame
         self.createdAt = createdAt
@@ -487,6 +506,28 @@ public struct DesktopCard: Identifiable, Codable, Sendable, Equatable {
                 ),
             ],
             theme: .mint,
+            createdAt: now,
+            updatedAt: now
+        )
+    }
+
+    /// 资料库桌面摘要卡片（v2.5）。
+    public static func deskRef(
+        documentID: UUID,
+        documentTitle: String,
+        documentSummary: String,
+        documentTags: [String],
+        now: Date = Date()
+    ) -> DesktopCard {
+        DesktopCard(
+            kind: .deskRef,
+            title: documentTitle,
+            targetDate: now,
+            theme: .sand,
+            referenceDocumentID: documentID,
+            referenceDocumentTitle: documentTitle,
+            referenceDocumentSummary: documentSummary,
+            referenceDocumentTags: documentTags,
             createdAt: now,
             updatedAt: now
         )

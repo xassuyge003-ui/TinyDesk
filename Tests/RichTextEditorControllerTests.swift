@@ -25,6 +25,77 @@ struct RichTextEditorControllerTests {
         let controller = RichTextEditorController()
         controller.connect(to: textView)
 
+        let editorData = Data("{\\rtf1 first paragraph}".utf8)
+        try require(
+            !RichTextReloadPolicy.shouldReload(
+                didLoad: true,
+                reloadsFromExternalChanges: false,
+                richTextData: nil,
+                fallbackText: "",
+                lastRichTextData: editorData,
+                lastPlainText: "first paragraph"
+            ),
+            "资料库保存刷新不应清空正在编辑的正文"
+        )
+        try require(
+            RichTextReloadPolicy.shouldReload(
+                didLoad: true,
+                reloadsFromExternalChanges: true,
+                richTextData: nil,
+                fallbackText: "",
+                lastRichTextData: editorData,
+                lastPlainText: "first paragraph"
+            ),
+            "外部 Binding 更新仍应同步到桌面便签"
+        )
+
+        let darkPaper = NSColor(red: 0.10, green: 0.11, blue: 0.13, alpha: 1)
+        let themeForeground = NSColor(red: 0.86, green: 0.80, blue: 0.62, alpha: 1)
+        try require(
+            RichTextContrast.needsAdaptiveForeground(.black, on: darkPaper),
+            "深色纸张上的黑字应触发自适应显示"
+        )
+        try require(
+            !RichTextContrast.needsAdaptiveForeground(themeForeground, on: darkPaper),
+            "主题推荐字色不应被重复替换"
+        )
+
+        let lowContrastSource = NSAttributedString(
+            string: "原始黑字",
+            attributes: [.foregroundColor: NSColor.black]
+        )
+        let displayCopy = RichTextContrast.displayAttributedString(
+            from: lowContrastSource,
+            background: darkPaper,
+            fallback: themeForeground
+        )
+        try require(
+            lowContrastSource.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor == .black,
+            "自适应显示不得修改源文档颜色"
+        )
+        try require(
+            displayCopy.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor == themeForeground,
+            "PDF 显示副本未替换低对比度字色"
+        )
+
+        let contrastTextView = NSTextView(frame: NSRect(x: 0, y: 0, width: 220, height: 80))
+        contrastTextView.textStorage?.setAttributedString(lowContrastSource)
+        RichTextContrast.applyTemporaryForegrounds(
+            to: contrastTextView,
+            background: darkPaper,
+            fallback: themeForeground
+        )
+        let temporaryColor = contrastTextView.layoutManager?.temporaryAttribute(
+            .foregroundColor,
+            atCharacterIndex: 0,
+            effectiveRange: nil
+        ) as? NSColor
+        try require(temporaryColor == themeForeground, "编辑器未应用临时高对比度字色")
+        try require(
+            contrastTextView.textStorage?.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor == .black,
+            "临时显示颜色污染了正文存储"
+        )
+
         controller.toggleBold()
         try require(controller.format.isBold, "粗体状态未更新")
         try require(selectedFont(in: textView, at: selection).fontDescriptor.symbolicTraits.contains(.bold), "粗体未应用")

@@ -16,6 +16,18 @@ TinyDesk 是一个单 target 的 macOS 菜单栏应用。可编辑能力由 AppK
        TinyDeskCore（纯 Foundation）
 ```
 
+v2.5 增加资料库子系统，与桌面卡片系统并行、存储隔离：
+
+```text
+资料库窗口（三栏 SwiftUI）
+         │
+       LibraryStore（@MainActor ObservableObject）
+         │            ├── LibraryFileManager（RTFD 文件包）
+         │            └── FTSIndexer（SQLite FTS5）
+         │
+       TinyDeskCore（模型 + SQLite 封装）
+```
+
 ## 目录
 
 ```text
@@ -31,12 +43,25 @@ TinyDesk/
 │   │   ├── SystemCalendarService.swift      # EventKit 导入、关联和同步
 │   │   ├── TinyDeskSettings.swift           # 开机启动与偏好设置
 │   │   ├── GlobalShortcut.swift             # 原生全局快捷键与录制控件
-│   │   └── ImportantDateNotificationScheduler.swift # 本地通知同步
+│   │   ├── ImportantDateNotificationScheduler.swift # 本地通知同步
+│   │   ├── LibraryWindowView.swift          # 资料库三栏窗口与工具栏
+│   │   ├── LibrarySidebarView.swift         # 目录/标签/收藏/最近/回收站
+│   │   ├── LibraryDocumentListView.swift    # 中间文档列表
+│   │   ├── LibraryEditorView.swift          # 纸张背景长文档编辑器
+│   │   ├── LibraryStore.swift               # 资料库主 Store
+│   │   ├── LibraryFileManager.swift         # RTFD 文件包读写
+│   │   ├── LibraryBackupArchive.swift       # 最小 ZIP 归档（stored）
+│   │   ├── LibraryBackup.swift              # 备份包打包/恢复
+│   │   ├── LibraryImportExport.swift        # RTF/RTFD/TXT/Markdown 导入导出
+│   │   ├── LibraryPDFRenderer.swift         # NSPrintOperation PDF 导出
+│   │   └── PaperTheme.swift                 # 十二套国风花笺与自适应文字对比度
 │   └── SupportingFiles/                    # Info.plist 与沙盒权限
 ├── TinyDeskCore/
 │   └── Sources/
 │       ├── TinyDeskCore/Models/DesktopCard.swift
+│       ├── TinyDeskCore/Models/LibraryDocument.swift
 │       ├── TinyDeskCore/Models/ChineseLunarCalendar.swift
+│       ├── TinyDeskCore/Storage/FTSIndexer.swift
 │       └── TinyDeskSelfTests/main.swift
 ├── project.yml                              # XcodeGen 单一事实来源
 └── TinyDesk.xcodeproj                       # 由 project.yml 生成
@@ -72,9 +97,28 @@ TinyDesk/
 
 重要日期存为工作区级事件库，多个日期卡片共享同一数据源。农历日期的换算由 Foundation 的中国历在核心层完成。`SystemCalendarLink` 为可选记录：系统来源读取并刷新系统日历事件，本地来源可写回用户选择的可写日历。为维持 TinyDesk 的“一次性/每年”模型，系统日历导入仅接受这两种重复规则，周/月等规则不会被错误转换。提醒由 `UNUserNotificationCenter` 在本机调度，不需要 App Group、推送证书或付费开发者能力；仅在用户为某条记录启用提醒时请求系统权限。
 
+### 资料库（v2.5）
+
+资料库是独立于桌面卡片的子系统，元数据与全文索引存于 SQLite，正文存于 RTFD 文件包：
+
+```text
+~/Library/Containers/com.kai.tinydesk/Data/Library/Application Support/TinyDesk/
+├── workspace.json          # v2.0 工作区（不变）
+└── Library/                # v2.5 新增
+    ├── library.db          # SQLite：documents/tags/categories/document_tags + FTS5
+    └── documents/          # <uuid>.rtfd 文件包（TXT.rtf + 图片附件）
+```
+
+- **存储隔离**：`LibraryStore` 只读写 `Library/library.db` 与 `Library/documents/`，与 `workspace.json` 完全分离，保证 v2.0 数据零回归。
+- **全文搜索**：SQLite FTS5，索引标题、正文、标签名与目录名。由于 `unicode61` 分词器不切分中文，`FTSIndexer.segmentedForFTS` 在写入与查询时把 CJK 连续文本切分为单字（空格分隔），使中文可按单字命中；查询词也做同样切分并用双引号包裹走短语匹配。
+- **RTFD 文件包**：正文通过 `NSAttributedString.fileWrapper` 保存为 `.rtfd` 目录（内含 `TXT.rtf` 与图片），读取用 `init(rtfdFileWrapper:)`，保证粗体、斜体、颜色、下划线、图片完整往返。
+- **备份 ZIP**：`LibraryBackupArchive` 用原生代码生成标准 ZIP（stored 方法 0），不依赖外部 `zip` 命令，兼容 Finder/ditto/unzip。备份包含 `manifest.json`、`library.json`（全量元数据）与 `documents/<id>.rtf`（正文）。
+- **回收站**：删除文档写入 `deleted_at` 软删除，保留 90 天；启动时自动清理过期条目。
+- **桌面摘要卡片**：`kind == .deskRef` 的卡片只读展示文档标题、摘要与标签，双击经通知打开资料库对应文档；不在卡片内编辑长文档。
+
 ## 分层约束
 
-- `TinyDeskCore` 只能依赖 Foundation，不得导入 SwiftUI 或 AppKit。
+- `TinyDeskCore` 只能依赖 Foundation，不得导入 SwiftUI 或 AppKit。（`FTSIndexer` 封装 SQLite C 接口，仍属系统框架调用。）
 - 平台窗口与持久化实现留在主应用 target。
 - 卡片内容不发起网络请求；项目默认零网络权限。
 - `project.yml` 是工程配置源，修改 target 或源文件后需重新生成 `.xcodeproj`。

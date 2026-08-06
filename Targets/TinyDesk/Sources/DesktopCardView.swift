@@ -87,6 +87,8 @@ struct DesktopCardHostView: View {
             CountdownCardContent(card: card, availableSize: contentSize)
         case .todo:
             TodoCardContent(card: card, availableSize: contentSize)
+        case .deskRef:
+            DeskRefCardContent(card: card, availableSize: contentSize)
         }
     }
 
@@ -421,7 +423,7 @@ private struct RichTextFormattingToolbar: View {
     }
 }
 
-private struct RichTextPaletteChoice: Identifiable {
+struct RichTextPaletteChoice: Identifiable {
     let id: String
     let displayName: String
     let color: NSColor
@@ -450,11 +452,14 @@ private struct RichTextPaletteChoice: Identifiable {
     }
 }
 
-private struct RichTextFormatButton: View {
+struct RichTextFormatButton: View {
     let systemName: String
     let help: String
     let isActive: Bool
     let isEnabled: Bool
+    var activeColor: Color = .accentColor
+    var inactiveColor: Color = .secondary
+    var inactiveBackground: Color = .clear
     let action: () -> Void
 
     var body: some View {
@@ -465,9 +470,9 @@ private struct RichTextFormatButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(isActive ? Color.white : .secondary)
+        .foregroundStyle(isActive ? Color.white : inactiveColor)
         .background(
-            isActive ? Color.accentColor.opacity(0.88) : Color.clear,
+            isActive ? activeColor.opacity(0.88) : inactiveBackground,
             in: RoundedRectangle(cornerRadius: 5, style: .continuous)
         )
         .disabled(!isEnabled)
@@ -1936,6 +1941,71 @@ private struct TodoItemRow: View {
     }
 }
 
+private struct DeskRefCardContent: View {
+    @EnvironmentObject private var windowManager: DesktopWindowManager
+    let card: DesktopCard
+    let availableSize: CGSize
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "books.vertical")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(card.theme.palette.accent)
+                Text(card.referenceDocumentTitle ?? card.title)
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+
+            Text(summaryText)
+                .font(.system(size: 13, design: .rounded))
+                .foregroundStyle(.secondary)
+                .lineLimit(4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Spacer(minLength: 0)
+
+            if let tags = card.referenceDocumentTags, !tags.isEmpty {
+                HStack(spacing: 4) {
+                    ForEach(tags.prefix(3), id: \.self) { tag in
+                        Text(tag)
+                            .font(.system(size: 9, weight: .medium, design: .rounded))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(card.theme.palette.accent.opacity(0.12), in: Capsule())
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(12)
+        .onTapGesture(count: 2) {
+            openDocument()
+        }
+        .onTapGesture {
+            // 单击提示双击打开。
+        }
+        .overlay(alignment: .bottomTrailing) {
+            Text("双击打开")
+                .font(.system(size: 9, weight: .medium, design: .rounded))
+                .foregroundStyle(.tertiary)
+                .padding(8)
+        }
+    }
+
+    private var summaryText: String {
+        let summary = (card.referenceDocumentSummary ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return summary.isEmpty ? "资料库文档" : summary
+    }
+
+    private func openDocument() {
+        guard let documentID = card.referenceDocumentID else { return }
+        windowManager.openLibraryDocument(documentID)
+    }
+}
+
 private struct CardSurface: View {
     let theme: DesktopCardTheme
     let style: DesktopCardSurfaceStyle
@@ -2029,6 +2099,7 @@ extension DesktopCardKind {
         case .sticky: return "note.text"
         case .countdown: return "calendar.badge.clock"
         case .todo: return "checklist"
+        case .deskRef: return "books.vertical"
         }
     }
 }

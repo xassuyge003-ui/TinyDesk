@@ -18,6 +18,8 @@ settings:
     ENABLE_HARDENED_RUNTIME: YES
     DEAD_CODE_STRIPPING: YES
     SWIFT_TREAT_WARNINGS_AS_ERRORS: NO
+    # 资料库 SQLite FTS5 使用系统 libsqlite3。
+    OTHER_LINKER_FLAGS: "-lsqlite3"
 
 packages:
   TinyDeskCore:

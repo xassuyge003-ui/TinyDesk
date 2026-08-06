@@ -68,7 +68,10 @@ hdiutil create \
     -format UDZO \
     "$dmg_path"
 hdiutil verify "$dmg_path"
-shasum -a 256 "$dmg_path" > "$checksum_path"
+(
+    cd "$output_dir"
+    shasum -a 256 "$(basename "$dmg_path")" > "$(basename "$checksum_path")"
+)
 
 echo "Created $dmg_path"
 echo "SHA-256 written to $checksum_path"

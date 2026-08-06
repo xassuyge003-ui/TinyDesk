@@ -13,6 +13,8 @@ final class RichTextEditorController: ObservableObject {
 
     @Published private(set) var format = FormatState()
     @Published private(set) var isReady = false
+    /// 当前资料库文档的字体预设（工具栏高亮用）。
+    @Published var currentFontPreset: RichTextDefaults.FontPreset = .fangSong
 
     private weak var textView: NSTextView?
 
@@ -20,6 +22,75 @@ final class RichTextEditorController: ObservableObject {
         guard self.textView !== textView else { return }
         self.textView = textView
         isReady = true
+        refreshSelectionState()
+    }
+
+    /// 用外部读到的正文替换编辑器内容（资料库加载文档用）。
+    func present(
+        _ attributedString: NSAttributedString,
+        fontPreset: RichTextDefaults.FontPreset,
+        defaultTextColor: NSColor = .labelColor
+    ) {
+        guard let textView else { return }
+        currentFontPreset = fontPreset
+        textView.textStorage?.setAttributedString(attributedString)
+        var typingAttributes = RichTextDefaults.attributes(fontSize: 16, preset: fontPreset)
+        typingAttributes[.foregroundColor] = defaultTextColor
+        textView.textColor = defaultTextColor
+        textView.typingAttributes = typingAttributes
+        refreshSelectionState()
+    }
+
+    /// 应用字号（资料库）。
+    func applyFontSize(_ pointSize: CGFloat) {
+        guard let textView else { return }
+        let range = textView.selectedRange()
+        if range.length == 0 {
+            var typing = textView.typingAttributes
+            let font = typing[.font] as? NSFont ?? textView.font ?? RichTextDefaults.font(size: 16)
+            typing[.font] = RichTextDefaults.resized(font, to: pointSize)
+            textView.typingAttributes = typing
+            refreshSelectionState()
+            return
+        }
+        guard textView.shouldChangeText(in: range, replacementString: nil),
+              let storage = textView.textStorage
+        else { return }
+
+        storage.beginEditing()
+        storage.enumerateAttribute(.font, in: range) { value, subrange, _ in
+            let font = value as? NSFont ?? textView.font ?? RichTextDefaults.font(size: 16)
+            storage.addAttribute(.font, value: RichTextDefaults.resized(font, to: pointSize), range: subrange)
+        }
+        storage.endEditing()
+        textView.didChangeText()
+        refreshSelectionState()
+    }
+
+    /// 应用中文字体预设（资料库）。
+    func applyFontPreset(_ preset: RichTextDefaults.FontPreset) {
+        guard let textView else { return }
+        currentFontPreset = preset
+        let range = textView.selectedRange()
+        if range.length == 0 {
+            var typing = textView.typingAttributes
+            let font = typing[.font] as? NSFont ?? textView.font ?? RichTextDefaults.font(size: 16)
+            typing[.font] = RichTextDefaults.font(size: font.pointSize, preset: preset)
+            textView.typingAttributes = typing
+            refreshSelectionState()
+            return
+        }
+        guard textView.shouldChangeText(in: range, replacementString: nil),
+              let storage = textView.textStorage
+        else { return }
+
+        storage.beginEditing()
+        storage.enumerateAttribute(.font, in: range) { value, subrange, _ in
+            let font = value as? NSFont ?? textView.font ?? RichTextDefaults.font(size: 16)
+            storage.addAttribute(.font, value: RichTextDefaults.font(size: font.pointSize, preset: preset), range: subrange)
+        }
+        storage.endEditing()
+        textView.didChangeText()
         refreshSelectionState()
     }
 
@@ -369,11 +440,121 @@ final class RichTextEditorController: ObservableObject {
     }
 }
 
+enum RichTextReloadPolicy {
+    static func shouldReload(
+        didLoad: Bool,
+        reloadsFromExternalChanges: Bool,
+        richTextData: Data?,
+        fallbackText: String,
+        lastRichTextData: Data?,
+        lastPlainText: String
+    ) -> Bool {
+        guard didLoad else { return true }
+        guard reloadsFromExternalChanges else { return false }
+        return richTextData != lastRichTextData || fallbackText != lastPlainText
+    }
+}
+
+/// 让富文本在不同深浅纸张上保持可读，同时保留文档中真实存储的文字颜色。
+enum RichTextContrast {
+    static let minimumRatio: CGFloat = 3.0
+
+    static func contrastRatio(foreground: NSColor, background: NSColor) -> CGFloat {
+        let foregroundLuminance = relativeLuminance(
+            color: foreground,
+            compositedOn: background
+        )
+        let backgroundLuminance = relativeLuminance(color: background, compositedOn: background)
+        let lighter = max(foregroundLuminance, backgroundLuminance)
+        let darker = min(foregroundLuminance, backgroundLuminance)
+        return (lighter + 0.05) / (darker + 0.05)
+    }
+
+    static func needsAdaptiveForeground(_ foreground: NSColor?, on background: NSColor) -> Bool {
+        guard let foreground else { return true }
+        return contrastRatio(foreground: foreground, background: background) < minimumRatio
+    }
+
+    static func displayAttributedString(
+        from source: NSAttributedString,
+        background: NSColor,
+        fallback: NSColor
+    ) -> NSAttributedString {
+        let result = NSMutableAttributedString(attributedString: source)
+        let range = NSRange(location: 0, length: result.length)
+        guard range.length > 0 else { return result }
+
+        source.enumerateAttribute(.foregroundColor, in: range) { value, subrange, _ in
+            let color = value as? NSColor
+            if needsAdaptiveForeground(color, on: background) {
+                result.addAttribute(.foregroundColor, value: fallback, range: subrange)
+            }
+        }
+        return result
+    }
+
+    @MainActor
+    static func applyTemporaryForegrounds(
+        to textView: NSTextView,
+        background: NSColor,
+        fallback: NSColor
+    ) {
+        guard let storage = textView.textStorage,
+              let layoutManager = textView.layoutManager
+        else { return }
+
+        let range = NSRange(location: 0, length: storage.length)
+        layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: range)
+        guard range.length > 0 else { return }
+
+        storage.enumerateAttribute(.foregroundColor, in: range) { value, subrange, _ in
+            let color = value as? NSColor
+            if needsAdaptiveForeground(color, on: background) {
+                layoutManager.addTemporaryAttribute(
+                    .foregroundColor,
+                    value: fallback,
+                    forCharacterRange: subrange
+                )
+            }
+        }
+    }
+
+    private static func relativeLuminance(color: NSColor, compositedOn background: NSColor) -> CGFloat {
+        guard let foregroundRGB = color.usingColorSpace(.sRGB),
+              let backgroundRGB = background.usingColorSpace(.sRGB)
+        else { return 0 }
+
+        let alpha = foregroundRGB.alphaComponent
+        let red = foregroundRGB.redComponent * alpha + backgroundRGB.redComponent * (1 - alpha)
+        let green = foregroundRGB.greenComponent * alpha + backgroundRGB.greenComponent * (1 - alpha)
+        let blue = foregroundRGB.blueComponent * alpha + backgroundRGB.blueComponent * (1 - alpha)
+
+        func linearize(_ component: CGFloat) -> CGFloat {
+            component <= 0.04045
+                ? component / 12.92
+                : pow((component + 0.055) / 1.055, 2.4)
+        }
+
+        return 0.2126 * linearize(red)
+            + 0.7152 * linearize(green)
+            + 0.0722 * linearize(blue)
+    }
+}
+
 struct RichTextEditor: NSViewRepresentable {
     let richTextData: Data?
     let fallbackText: String
     let fontSize: CGFloat
     let controller: RichTextEditorController
+    /// 桌面便签由外部 Binding 驱动；资料库正文则由同一编辑会话负责，
+    /// 避免存储层刷新时把用户刚输入的内容重新替换掉。
+    var reloadsFromExternalChanges = true
+    /// 资料库纸张主题可指定默认输入颜色；桌面便签仍使用系统文字色。
+    var defaultTextColor: NSColor? = nil
+    /// 指定后，仅把低对比度文字临时显示成主题字色，不修改或保存用户原有颜色。
+    var adaptiveBackgroundColor: NSColor? = nil
+    /// 编辑正文的安全留白。桌面便签使用默认值，资料库使用更宽的纸张边距。
+    var textContainerInset = NSSize(width: 8, height: 0)
     let onChange: (Data?, String) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -397,17 +578,21 @@ struct RichTextEditor: NSViewRepresentable {
         textView.isHorizontallyResizable = false
         textView.isVerticallyResizable = true
         textView.autoresizingMask = [.width]
-        textView.textContainerInset = NSSize(width: 8, height: 0)
+        textView.textContainerInset = textContainerInset
         textView.textContainer?.lineFragmentPadding = 0
         textView.textContainer?.widthTracksTextView = true
         textView.usesFindPanel = true
         textView.font = RichTextDefaults.font(size: fontSize)
-        textView.textColor = .labelColor
-        textView.typingAttributes = RichTextDefaults.attributes(fontSize: fontSize)
+        let textColor = defaultTextColor ?? .labelColor
+        textView.textColor = textColor
+        var typingAttributes = RichTextDefaults.attributes(fontSize: fontSize)
+        typingAttributes[.foregroundColor] = textColor
+        textView.typingAttributes = typingAttributes
 
         scrollView.documentView = textView
         context.coordinator.load(richTextData: richTextData, fallbackText: fallbackText, into: textView)
         controller.connect(to: textView)
+        context.coordinator.refreshAdaptiveForeground(in: textView)
         return scrollView
     }
 
@@ -419,6 +604,7 @@ struct RichTextEditor: NSViewRepresentable {
         if context.coordinator.shouldReload(richTextData: richTextData, fallbackText: fallbackText) {
             context.coordinator.load(richTextData: richTextData, fallbackText: fallbackText, into: textView)
         }
+        context.coordinator.refreshAdaptiveForeground(in: textView)
     }
 
     @MainActor
@@ -434,7 +620,14 @@ struct RichTextEditor: NSViewRepresentable {
         }
 
         func shouldReload(richTextData: Data?, fallbackText: String) -> Bool {
-            !didLoad || richTextData != lastRichTextData || fallbackText != lastPlainText
+            RichTextReloadPolicy.shouldReload(
+                didLoad: didLoad,
+                reloadsFromExternalChanges: parent.reloadsFromExternalChanges,
+                richTextData: richTextData,
+                fallbackText: fallbackText,
+                lastRichTextData: lastRichTextData,
+                lastPlainText: lastPlainText
+            )
         }
 
         func load(richTextData: Data?, fallbackText: String, into textView: NSTextView) {
@@ -447,11 +640,15 @@ struct RichTextEditor: NSViewRepresentable {
                 fontSize: parent.fontSize
             )
             textView.textStorage?.setAttributedString(attributed)
-            textView.typingAttributes = RichTextDefaults.attributes(fontSize: parent.fontSize)
+            var typingAttributes = RichTextDefaults.attributes(fontSize: parent.fontSize)
+            typingAttributes[.foregroundColor] = parent.defaultTextColor ?? .labelColor
+            textView.textColor = parent.defaultTextColor ?? .labelColor
+            textView.typingAttributes = typingAttributes
             lastRichTextData = richTextData
             lastPlainText = fallbackText
             didLoad = true
             parent.controller.refreshSelectionState()
+            refreshAdaptiveForeground(in: textView)
         }
 
         func textDidChange(_ notification: Notification) {
@@ -464,10 +661,39 @@ struct RichTextEditor: NSViewRepresentable {
             lastPlainText = textView.string
             parent.onChange(data, textView.string)
             parent.controller.refreshSelectionState()
+            refreshAdaptiveForeground(in: textView)
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
             parent.controller.refreshSelectionState()
+        }
+
+        func refreshAdaptiveForeground(in textView: NSTextView) {
+            guard let background = parent.adaptiveBackgroundColor else {
+                if let layoutManager = textView.layoutManager {
+                    layoutManager.removeTemporaryAttribute(
+                        .foregroundColor,
+                        forCharacterRange: NSRange(location: 0, length: textView.string.utf16.count)
+                    )
+                }
+                return
+            }
+
+            let fallback = parent.defaultTextColor ?? .labelColor
+            textView.textColor = fallback
+            var typingAttributes = textView.typingAttributes
+            if RichTextContrast.needsAdaptiveForeground(
+                typingAttributes[.foregroundColor] as? NSColor,
+                on: background
+            ) {
+                typingAttributes[.foregroundColor] = fallback
+                textView.typingAttributes = typingAttributes
+            }
+            RichTextContrast.applyTemporaryForegrounds(
+                to: textView,
+                background: background,
+                fallback: fallback
+            )
         }
     }
 }
@@ -477,6 +703,52 @@ enum RichTextDefaults {
     static let syntheticItalicShear = 0.55
     static let syntheticItalicAttribute = NSAttributedString.Key("TinyDeskSyntheticItalic")
 
+    /// 正文基准字号（资料库编辑器使用）。
+    static let bodyFontSize: CGFloat = 16
+
+    /// 资料库中文字体预设，独立于 Core 模型以便独立编译测试。
+    enum FontPreset: String, CaseIterable {
+        case fangSong
+        case songTi
+        case system
+
+        var displayName: String {
+            switch self {
+            case .fangSong: return "仿宋"
+            case .songTi: return "宋体"
+            case .system: return "系统默认"
+            }
+        }
+    }
+
+    /// 按字体预设返回中文字体；英文始终使用 Apple 系统字体。
+    static func font(size: CGFloat, preset: FontPreset = .system) -> NSFont {
+        switch preset {
+        case .fangSong:
+            return fangSongFont(size: size)
+        case .songTi:
+            return songTiFont(size: size)
+        case .system:
+            return font(size: size)
+        }
+    }
+
+    /// 仿宋优先，缺失时降级宋体，再降级系统字体。
+    static func fangSongFont(size: CGFloat) -> NSFont {
+        if let fangSong = NSFont(name: "STFangsong", size: size) {
+            return fangSong
+        }
+        return songTiFont(size: size)
+    }
+
+    /// 宋体，缺失时降级系统字体。
+    static func songTiFont(size: CGFloat) -> NSFont {
+        if let songTi = NSFont(name: "STSongti-SC", size: size) {
+            return songTi
+        }
+        return NSFont.systemFont(ofSize: size)
+    }
+
     static func font(size: CGFloat) -> NSFont {
         let systemFont = NSFont.systemFont(ofSize: size)
         guard let descriptor = systemFont.fontDescriptor.withDesign(.rounded) else {
@@ -485,11 +757,22 @@ enum RichTextDefaults {
         return NSFont(descriptor: descriptor, size: size) ?? systemFont
     }
 
+    /// 按字号缩放字体，保留字体族与斜体矩阵。
+    static func resized(_ font: NSFont, to pointSize: CGFloat) -> NSFont {
+        guard font.pointSize != pointSize else { return font }
+        let descriptor = font.fontDescriptor.withSize(pointSize)
+        return NSFont(descriptor: descriptor, size: pointSize) ?? font
+    }
+
     static func attributes(fontSize: CGFloat) -> [NSAttributedString.Key: Any] {
+        attributes(fontSize: fontSize, preset: .system)
+    }
+
+    static func attributes(fontSize: CGFloat, preset: FontPreset) -> [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3
         return [
-            .font: font(size: fontSize),
+            .font: font(size: fontSize, preset: preset),
             .foregroundColor: NSColor.labelColor,
             .paragraphStyle: paragraph,
         ]

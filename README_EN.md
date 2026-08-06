@@ -26,14 +26,16 @@ and position are saved automatically in the app sandbox.
 | Appearance | Five color themes plus frosted, transparent, and opaque surfaces per card |
 | Layout | Small square, medium wide, and large square presets with free edge resizing |
 | Desktop workflow | All Spaces, show/hide, reset position, position lock, launch at login, global quick-note shortcut |
-| Privacy | App Sandbox, local JSON, no account, telemetry, analytics, or network requests |
+| Library | Three-pane long-document library with folders, tags, favorites, recents, trash, full-text search, rich text, and twelve Chinese paper themes |
+| Import/export | RTF, RTFD, TXT, and Markdown import; RTF, RTFD, TXT, Markdown, and PDF export; complete ZIP backups |
+| Privacy | App Sandbox, local JSON + SQLite, no account, telemetry, analytics, or network requests |
 
 ## Project status
 
-- Current version: `2.0.0` (build 20)
+- Current version: `2.5.0` (build 25)
 - Minimum system: macOS 14
 - Stage: usable early release with a versioned workspace format and legacy migration
-- Automated checks: 50 core model/persistence checks; GitHub Actions builds a universal DMG for every release tag
+- Automated checks: 76 core model/persistence checks plus ZIP/RTFD backup round-trip coverage; GitHub Actions builds a universal DMG for every release tag
 - Key flows covered: direct editing, window layering, size presets, themes, position locks, todo filters, both important-date views, and lunar conversion
 
 Memory and storage depend on macOS, card count, and rich-text content. The workspace remains local to the app sandbox.
@@ -73,6 +75,17 @@ A free personal Apple ID is sufficient for local development; no paid entitlemen
 
 Every tag matching the `Info.plist` version publishes a universal `TinyDesk-x.y.z.dmg` and its SHA-256 file on
 [GitHub Releases](https://github.com/xassuyge003-ui/TinyDesk/releases).
+
+### Version downloads
+
+| Version | Highlights | Download |
+|---|---|---|
+| V2.5.0 | Latest: desktop cards plus the document library, full-text search, import/export, and Chinese paper themes | [Release notes and DMG](https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v2.5.0) |
+| V2.0.0 | Lunar birthdays, system Calendar integration, launch at login, and quick notes | [Release](https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v2.0.0) · [DMG](https://github.com/xassuyge003-ui/TinyDesk/releases/download/v2.0.0/TinyDesk-2.0.0.dmg) |
+| V1.1.1 | Stable rich-text note release | [Release](https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v1.1.1) · [ZIP](https://github.com/xassuyge003-ui/TinyDesk/releases/download/v1.1.1/TinyDesk-v1.1.1-macOS-universal.zip) |
+| V1.0.0 | First public baseline | [Release](https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v1.0.0) · [ZIP](https://github.com/xassuyge003-ui/TinyDesk/releases/download/v1.0.0/TinyDesk-v1.0.0-macOS-universal.zip) |
+
+Previous releases, binaries, source snapshots, and release notes remain available and are not replaced by newer versions. Back up local data before downgrading.
 
 1. Open the DMG and drag `TinyDesk.app` to Applications.
 2. For the first launch, Control-click `TinyDesk.app`, choose **Open**, and confirm the macOS prompt.
@@ -131,6 +144,14 @@ To avoid silently changing event semantics, import accepts only one-time and yea
 Completed todos receive a strikethrough and move below pending items. Filters show all, pending, or
 completed tasks; unfinished tasks scheduled for yesterday or earlier receive overdue labels.
 
+### Document library
+
+Open **Library** from the control center or menu bar. Its left pane contains folders, tags, favorites,
+recents, and trash; the middle pane lists matching documents; the right pane is a rich-text editor.
+Use `⌘N` to create a document, `⌘⇧O` to import, `⌘⇧E` to export, and `⌘F` to search titles,
+body text, tags, and folders. Twelve paper themes apply consistently to all three panes and the
+formatting toolbar. Documents are stored as RTFD packages, while metadata and FTS5 indexes use SQLite.
+
 ## Data and privacy
 
 TinyDesk contains no account system, analytics SDK, ads, cloud sync, or network content. Plain note
@@ -144,6 +165,13 @@ The control center can reveal this directory in Finder. Saves use atomic replace
 workspace is preserved as a timestamped corrupt backup before defaults are created. Back up
 `workspace.json` before removing the app container.
 
+Library metadata, full-text indexes, and RTFD documents are stored separately at:
+
+```text
+~/Library/Containers/com.kai.tinydesk/Data/Library/Application Support/TinyDesk/Library/library.db
+~/Library/Containers/com.kai.tinydesk/Data/Library/Application Support/TinyDesk/Library/documents/
+```
+
 Notifications are scheduled locally with `UNUserNotificationCenter`; date content is not sent to a
 third party. Calendar permission is requested only for a user-initiated import, link, or sync and is used through local EventKit. See [SECURITY.md](./SECURITY.md) for the security policy.
 
@@ -154,7 +182,7 @@ third party. Calendar permission is requested only for a user-initiated import, 
 - The DMG is ad-hoc signed, not Developer ID-notarized; Finder confirmation is required on the first launch.
 - Cards do not cover exclusive full-screen apps or float above normal applications.
 - Calendar account sharing and conflict resolution remain managed by macOS Calendar; TinyDesk does not merge cloud conflicts.
-- v1.0.0 and v1.1.x remain downloadable. They do not understand v2.0 lunar, Calendar-link, or pin fields, so back up the workspace before downgrading.
+- v1.0.0, v1.1.1, and v2.0.0 remain downloadable. Older versions do not understand later data fields, so back up the workspace and library before downgrading.
 
 ## Architecture
 

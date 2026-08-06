@@ -34,7 +34,10 @@ print("Workspace seed")
 let seeded = TinyDeskWorkspace.seeded(now: now, calendar: calendar)
 check(seeded.schemaVersion == TinyDeskWorkspace.currentSchemaVersion, "工作区 schema 为当前版本")
 check(seeded.cards.count == 3, "首次启动创建三张桌面卡片")
-check(Set(seeded.cards.map(\.kind)) == Set(DesktopCardKind.allCases), "默认卡片覆盖便签、倒数日、待办")
+check(
+    Set(seeded.cards.map(\.kind)) == Set([DesktopCardKind.sticky, .countdown, .todo]),
+    "默认卡片覆盖便签、倒数日、待办"
+)
 check(seeded.importantDates.count == 1, "首次启动创建一条重要日期")
 check(
     seeded.cards.first(where: { $0.kind == .countdown })?.featuredImportantDateID == seeded.importantDates.first?.id,
@@ -210,6 +213,22 @@ check(
 )
 check(TodoPriority.normal < .important && TodoPriority.important < .urgent, "待办优先级可排序")
 
+print("Desk reference cards (v2.5)")
+let referenceDocID = UUID()
+var deskRef = DesktopCard.deskRef(
+    documentID: referenceDocID,
+    documentTitle: "关于四季的札记",
+    documentSummary: "春天的桃花，夏天的蝉鸣，秋天的落叶与冬天的初雪。",
+    documentTags: ["随笔", "季节"],
+    now: now
+)
+check(deskRef.kind == .deskRef, "资料库摘要卡片使用新类型")
+check(deskRef.referenceDocumentID == referenceDocID, "摘要卡片保留文档 ID 关联")
+check(deskRef.referenceDocumentTitle == "关于四季的札记", "摘要卡片缓存文档标题")
+deskRef.referenceDocumentTitle = "改名的札记"
+check(deskRef.referenceDocumentTitle == "改名的札记", "文档改名后可同步更新缓存标题")
+check(deskRef.referenceDocumentTags == ["随笔", "季节"], "摘要卡片缓存标签列表")
+
 print("Persistence contract")
 var sticky = DesktopCard.sticky(now: now)
 sticky.frame = DesktopCardFrame(x: 40, y: 80, width: 320, height: 280, screenIdentifier: "1")
@@ -235,7 +254,7 @@ let linkedSystemDate = ImportantDateEvent(
     updatedAt: now
 )
 let workspace = TinyDeskWorkspace(
-    cards: [sticky, countdown, todo],
+    cards: [sticky, countdown, todo, deskRef],
     importantDates: [newYear, birthday, oneTime, linkedSystemDate]
 )
 let encoder = JSONEncoder()
@@ -254,6 +273,10 @@ check(
     decoded.importantDates.last?.systemCalendarLink?.authority == .systemCalendar,
     "系统日历来源关联会持久化"
 )
+let decodedDeskRef = decoded.cards.last
+check(decodedDeskRef?.kind == .deskRef, "资料库摘要卡片类型会持久化")
+check(decodedDeskRef?.referenceDocumentID == referenceDocID, "资料库摘要卡片文档 ID 会持久化")
+check(decodedDeskRef?.referenceDocumentTags == ["随笔", "季节"], "资料库摘要卡片标签缓存会持久化")
 
 if var legacyObject = try JSONSerialization.jsonObject(with: encoded) as? [String: Any],
    var legacyCards = legacyObject["cards"] as? [[String: Any]] {
@@ -317,6 +340,124 @@ if var legacyObject = try JSONSerialization.jsonObject(with: legacyEncoded) as? 
 } else {
     check(false, "schema 迁移测试数据可构造")
 }
+
+print("Library SQLite storage (v2.5)")
+let tempDirectory = FileManager.default.temporaryDirectory
+    .appendingPathComponent("TinyDeskLibraryTests-\(UUID().uuidString)", isDirectory: true)
+let libraryURL = tempDirectory.appendingPathComponent("library.db")
+let documentsURL = tempDirectory.appendingPathComponent("documents")
+try? FileManager.default.createDirectory(at: documentsURL, withIntermediateDirectories: true)
+
+do {
+    let indexer = try FTSIndexer(url: libraryURL)
+
+    let category = LibraryCategory(name: "工作", sortOrder: 0, iconName: "briefcase")
+    let category2 = LibraryCategory(name: "学习", sortOrder: 1, iconName: "book")
+    let tagA = LibraryTag(name: "重要", colorHex: "#C0392B")
+    let tagB = LibraryTag(name: "随笔", colorHex: "#2C3E50")
+    try indexer.upsertCategory(category)
+    try indexer.upsertCategory(category2)
+    try indexer.upsertTag(tagA)
+    try indexer.upsertTag(tagB)
+
+    let docA = LibraryDocument(
+        title: "春天的桃花开了",
+        categoryID: category.id,
+        tagIDs: [tagA.id, tagB.id],
+        paperTheme: .xuanZhi,
+        fontPreset: .fangSong,
+        wordCount: 120,
+        summary: "春天到了，桃花盛开，燕子归来。"
+    )
+    let docB = LibraryDocument(
+        title: "冬天煮茶的笔记",
+        categoryID: category2.id,
+        tagIDs: [tagB.id],
+        paperTheme: .yeMo,
+        wordCount: 80,
+        summary: "雪夜煮茶，一盏清苦。"
+    )
+    let docC = LibraryDocument(title: "未分类的草稿")
+    try indexer.insertDocument(docA)
+    try indexer.insertDocument(docB)
+    try indexer.insertDocument(docC)
+    try indexer.replaceDocumentTags(documentID: docA.id, tagIDs: [tagA.id, tagB.id])
+    try indexer.replaceDocumentTags(documentID: docB.id, tagIDs: [tagB.id])
+
+    // 索引正文与标签、目录名
+    try indexer.index(documentID: docA.id, title: docA.title, body: "春天桃花盛开，燕子从南方归来。", tags: ["重要", "随笔"], category: "工作")
+    try indexer.index(documentID: docB.id, title: docB.title, body: "冬天雪夜，围炉煮茶，一盏清苦入喉。", tags: ["随笔"], category: "学习")
+
+    let allDocuments = try indexer.loadAllDocuments()
+    check(allDocuments.count == 3, "资料库文档数量正确")
+    check(
+        allDocuments.first(where: { $0.id == docA.id })?.categoryID == category.id,
+        "文档目录关联正确"
+    )
+    check(
+        Set(allDocuments.first(where: { $0.id == docA.id })?.tagIDs ?? []) == Set([tagA.id, tagB.id]),
+        "文档标签关联正确"
+    )
+    check(
+        allDocuments.first(where: { $0.id == docB.id })?.paperTheme == .yeMo,
+        "文档纸张主题持久化"
+    )
+
+    let restoredCategory = UUID()
+    let restoredTagA = UUID()
+    let restoredTagB = UUID()
+    let restoredReferences = LibraryRestoreReferenceMapping.remap(
+        categoryID: category.id,
+        tagIDs: [tagA.id, tagB.id],
+        categoryIDs: [category.id: restoredCategory],
+        tagIDsBySourceID: [tagA.id: restoredTagA, tagB.id: restoredTagB]
+    )
+    check(restoredReferences.categoryID == restoredCategory, "备份恢复会映射目录关联")
+    check(Set(restoredReferences.tagIDs) == Set([restoredTagA, restoredTagB]), "备份恢复会映射标签关联")
+
+    let springIDs = try indexer.searchIDs(query: "桃花")
+    check(springIDs.count == 1, "正文全文搜索可命中")
+    let springRowID = try indexer.fetchRowID(forDocumentID: docA.id)
+    check(springRowID != nil && springIDs.first == springRowID, "搜索返回正确文档")
+    let snippet = try indexer.snippet(for: springRowID!, query: "桃花")
+    check(snippet?.contains("<b>") == true, "搜索片段带高亮标记")
+
+    let tagSearch = try indexer.searchIDs(query: "随笔")
+    check(tagSearch.count == 2, "标签名可被搜索")
+    let titleSearch = try indexer.searchIDs(query: "冬天")
+    check(titleSearch.count == 1, "标题可被搜索")
+    let categorySearch = try indexer.searchIDs(query: "工作")
+    check(categorySearch.count == 1, "目录名可被搜索")
+
+    // 软删除
+    var trashedDoc = docA
+    trashedDoc.deletedAt = Date(timeIntervalSinceNow: -10)
+    try indexer.insertDocument(trashedDoc)
+    let withTrash = try indexer.loadAllDocuments()
+    check(withTrash.first(where: { $0.id == docA.id })?.isTrashed == true, "回收站中的文档带删除标记")
+
+    // 过期回收站清理
+    let expiredIDs = try indexer.purgeExpiredTrash(
+        before: Date(timeIntervalSinceNow: 60 * 60 * 24 * 100)
+    )
+    check(expiredIDs.contains(docA.id), "过期回收站文档被清理")
+
+    let categories = try indexer.loadAllCategories()
+    check(categories.count == 2, "目录列表正确")
+    let tags = try indexer.loadAllTags()
+    check(tags.count == 2, "标签列表正确")
+
+    // 删除标签与目录
+    try indexer.deleteTag(tagB.id)
+    let remainingTags = try indexer.loadAllTags()
+    check(remainingTags.count == 1, "删除标签生效")
+    try indexer.deleteCategory(category2.id)
+    let remainingCategories = try indexer.loadAllCategories()
+    check(remainingCategories.count == 1, "删除目录生效")
+} catch {
+    check(false, "资料库存储测试失败: \(error)")
+}
+try? FileManager.default.removeItem(at: tempDirectory)
 
 print("")
 print("结果: \(runs - failures)/\(runs) 通过, \(failures) 失败")

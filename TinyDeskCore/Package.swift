@@ -18,7 +18,10 @@ let package = Package(
     targets: [
         .target(
             name: "TinyDeskCore",
-            path: "Sources/TinyDeskCore"
+            path: "Sources/TinyDeskCore",
+            linkerSettings: [
+                .linkedLibrary("sqlite3"),
+            ]
         ),
         .executableTarget(
             name: "TinyDeskSelfTests",

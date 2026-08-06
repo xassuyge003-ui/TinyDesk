@@ -13,9 +13,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>2.0.0</string>
+	<string>2.5.0</string>
 	<key>CFBundleVersion</key>
-	<string>20</string>
+	<string>25</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.productivity</string>
     <key>LSMinimumSystemVersion</key>
@@ -28,5 +28,21 @@
 	<string>TinyDesk 仅在您主动导入、关联或同步重要日期时读取和写入所选系统日历。</string>
 	<key>NSCalendarsUsageDescription</key>
 	<string>TinyDesk 仅在您主动导入、关联或同步重要日期时读取和写入所选系统日历。</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Rich Text Document</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.rtf</string>
+				<string>com.apple.rtfd</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

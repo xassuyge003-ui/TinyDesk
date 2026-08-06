@@ -9,6 +9,7 @@ struct TinyDeskApp: App {
     @StateObject private var windowManager: DesktopWindowManager
     @StateObject private var settings: TinyDeskSettings
     @StateObject private var calendarService: SystemCalendarService
+    @StateObject private var libraryStore: LibraryStore
 
     @MainActor
     init() {
@@ -26,6 +27,7 @@ struct TinyDeskApp: App {
                 calendarService: systemCalendarService
             )
         )
+        _libraryStore = StateObject(wrappedValue: LibraryStore())
     }
 
     var body: some Scene {
@@ -71,6 +73,37 @@ struct TinyDeskApp: App {
             }
         }
 
+        Window("TinyDesk 资料库", id: "library") {
+            LibraryWindowView()
+                .environmentObject(libraryStore)
+                .onAppear {
+                    NSApplication.shared.activate(ignoringOtherApps: true)
+                }
+        }
+        .defaultSize(width: 1100, height: 720)
+        .commands {
+            CommandMenu("资料库") {
+                Button("新建文档") { libraryStore.createDocument() }
+                    .keyboardShortcut("n", modifiers: .command)
+                Divider()
+                Button("导入…") {
+                    openImportPanel()
+                }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+                Button("导出…") {
+                    openExportPanel()
+                }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+                Divider()
+                Button("导出资料库备份…") {
+                    openBackupPanel()
+                }
+                Button("恢复资料库备份…") {
+                    openRestorePanel()
+                }
+            }
+        }
+
         MenuBarExtra("TinyDesk", systemImage: "rectangle.3.group.bubble.left.fill") {
             TinyDeskMenuBarView()
                 .environmentObject(store)
@@ -80,6 +113,82 @@ struct TinyDeskApp: App {
                 .onAppear { windowManager.start() }
         }
         .menuBarExtraStyle(.menu)
+    }
+
+    // MARK: 资料库菜单动作
+
+    private func openImportPanel() {
+        let panel = NSOpenPanel()
+        panel.title = "导入文档到资料库"
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = LibraryImportExport.supportedImportContentTypes
+        panel.begin { response in
+            guard response == .OK else { return }
+            do {
+                try LibraryImportExport.importFiles(panel.urls, store: libraryStore)
+                NSApplication.shared.activate(ignoringOtherApps: true)
+            } catch {
+                presentLibraryError(error)
+            }
+        }
+    }
+
+    private func openExportPanel() {
+        guard let document = libraryStore.selectedDocumentID
+            .flatMap({ libraryStore.document(withID: $0) })
+        else { return }
+        let panel = NSSavePanel()
+        panel.title = "导出文档"
+        panel.allowedContentTypes = LibraryImportExport.supportedExportContentTypes
+        panel.nameFieldStringValue = "\(document.title).rtf"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                try LibraryImportExport.export(document, to: url, store: libraryStore)
+            } catch {
+                presentLibraryError(error)
+            }
+        }
+    }
+
+    private func openBackupPanel() {
+        let panel = NSSavePanel()
+        panel.title = "导出资料库备份"
+        panel.allowedContentTypes = [.zip]
+        panel.nameFieldStringValue = "TinyDesk 资料库备份"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                try LibraryImportExport.exportBackup(store: libraryStore, to: url)
+            } catch {
+                presentLibraryError(error)
+            }
+        }
+    }
+
+    private func openRestorePanel() {
+        let panel = NSOpenPanel()
+        panel.title = "恢复资料库备份"
+        panel.allowedContentTypes = [.zip]
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                let count = try LibraryImportExport.importBackup(from: url, store: libraryStore)
+                let alert = NSAlert()
+                alert.messageText = "恢复完成"
+                alert.informativeText = "已恢复 \(count) 篇文档。"
+                alert.runModal()
+            } catch {
+                presentLibraryError(error)
+            }
+        }
+    }
+
+    private func presentLibraryError(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "资料库操作失败"
+        alert.informativeText = error.localizedDescription
+        alert.runModal()
     }
 }
 
@@ -91,6 +200,10 @@ private struct TinyDeskMenuBarView: View {
     var body: some View {
         Button("打开 TinyDesk 控制中心", systemImage: "macwindow") {
             openControlCenter()
+        }
+        Button("打开资料库", systemImage: "books.vertical") {
+            openWindow(id: "library")
+            NSApplication.shared.activate(ignoringOtherApps: true)
         }
 
         Divider()

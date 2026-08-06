@@ -26,14 +26,16 @@ iCloud 或付费 Apple Developer Program。
 | 外观 | 石墨、暖沙、薄荷、玫瑰、海洋五种颜色；毛玻璃、透明、不透明三种背景 |
 | 布局 | 小号方形、中号横向、大号方形预设，也可拖动边缘自由缩放 |
 | 桌面体验 | 跨 Space、显示/隐藏、恢复默认位置、卡片位置锁定、开机自启、全局快捷键快速便签 |
-| 隐私 | App Sandbox、本地 JSON、无账号、无遥测、无网络请求 |
+| 资料库 | 长文档整理：目录树、标签、收藏、最近打开、回收站、全文搜索、富文本编辑、十二套国风花笺主题 |
+| 导入导出 | 资料库支持 RTF/RTFD/TXT/Markdown 导入，RTF/RTFD/TXT/Markdown/PDF 导出与 ZIP 备份包 |
+| 隐私 | App Sandbox、本地 JSON + SQLite、无账号、无遥测、无网络请求 |
 
 ## 当前状态
 
-- 当前版本：`2.0.0`（build 20）
+- 当前版本：`2.5.0`
 - 最低系统：macOS 14
 - 发布阶段：可用的早期版本，数据格式带版本号并包含旧版迁移
-- 自动验证：50 项核心模型与持久化自检；GitHub Actions 在每个与应用版本一致的标签构建通用 DMG
+- 自动验证：76 项核心模型与持久化自检 + ZIP/RTFD 附件备份往返测试；GitHub Actions 在每个与应用版本一致的标签构建通用 DMG
 - 已覆盖的关键流程：直接编辑、窗口层级、尺寸预设、外观切换、锁定、待办筛选、重要日期双视图与农历换算
 
 内存和数据大小会随系统版本、卡片数量及富文本内容变化；工作区始终仅保存在本机沙盒中。
@@ -73,6 +75,17 @@ open TinyDesk.xcodeproj
 
 每个与 `Info.plist` 版本一致的标签都会在 [GitHub Releases](https://github.com/xassuyge003-ui/TinyDesk/releases) 发布通用
 `TinyDesk-x.y.z.dmg`，同时提供 SHA-256 校验文件。下载后：
+
+### 版本下载
+
+| 版本 | 适合用途 | 下载 |
+|---|---|---|
+| V2.5.0 | 最新版：桌面卡片 + 长文档资料库、全文搜索、导入导出和国风花笺 | [发布说明与 DMG](https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v2.5.0) |
+| V2.0.0 | 农历生日、系统日历、开机自启和快捷便签 | [发布说明](https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v2.0.0) · [直接下载 DMG](https://github.com/xassuyge003-ui/TinyDesk/releases/download/v2.0.0/TinyDesk-2.0.0.dmg) |
+| V1.1.1 | 富文本便签稳定版 | [发布说明](https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v1.1.1) · [直接下载 ZIP](https://github.com/xassuyge003-ui/TinyDesk/releases/download/v1.1.1/TinyDesk-v1.1.1-macOS-universal.zip) |
+| V1.0.0 | 首个公开基础版本 | [发布说明](https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v1.0.0) · [直接下载 ZIP](https://github.com/xassuyge003-ui/TinyDesk/releases/download/v1.0.0/TinyDesk-v1.0.0-macOS-universal.zip) |
+
+旧版 Release、安装包、源码快照和原发布说明均长期保留，不会被新版覆盖。跨版本降级前请先备份本地数据。
 
 1. 双击 DMG，将 `TinyDesk.app` 拖入“应用程序”。
 2. 首次打开时，按住 Control 点击 `TinyDesk.app` 并选择“打开”，再在系统提示中确认。
@@ -145,6 +158,25 @@ xcodebuild \
 - 昨日计划但未完成的事项显示“昨日未完成”，更早的事项显示逾期天数。
 - 事项支持优先级和计划日期。
 
+### 资料库
+
+从控制中心或菜单栏的“打开资料库”进入。资料库是三栏长文档管理器：
+
+- **左侧**：目录树、标签、收藏、最近打开、回收站。
+- **中间**：当前筛选下的文档列表，显示标题、摘要、标签与更新时间。
+- **右侧**：纸张背景上的长文档编辑器，支持粗体、斜体、下划线、删除线、颜色、字号、中文字体预设（仿宋/宋体/系统）；字体入口会直接显示当前字体，并使用与花笺一致的色彩和中文排版。
+
+操作：
+
+- `⌘N` 新建文档，`⌘⇧O` 导入，`⌘⇧E` 导出，`⌘F` 聚焦全文搜索框。
+- 标题栏的“花笺材料”入口可切换十二套主题：素笺、宣纸、竹简、墨青、朱砂、夜墨、梅影笺、青花笺、兰亭笺、敦煌笺、松烟笺、云锦笺。切换后，左侧资料导航、中部文档列表、右侧编辑器和格式工具栏会作为一个完整界面同步换肤。
+- 所有主题均采用无横线纸面；正文会根据纸张底色临时增强低对比度文字，原始富文本颜色与格式不会被改写，PDF 导出采用相同可读性规则。
+- 文档列表右键可将文档“添加到桌面”，创建只读摘要卡片；双击摘要卡片回到资料库对应文档。
+- 回收站文档保留 90 天后自动清理；也可手动恢复或永久删除。
+- “导出资料库备份”生成 ZIP 备份包，“恢复资料库备份”可完整还原全部目录、标签、文档与 RTFD 附件；旧版备份包也可继续恢复。
+
+资料库的快速记录、资料整理与花笺语义调研参考了 MIT 许可的 [Achilng/floral-notepaper](https://github.com/Achilng/floral-notepaper)。TinyDesk 使用原生 Swift/AppKit 独立实现，不引入 Tauri/React 运行时，也未复制其图片素材。
+
 ## 数据与隐私
 
 TinyDesk 不包含账号、分析 SDK、广告、云同步或联网内容。便签纯文本和富文本格式、重要日期、
@@ -154,8 +186,16 @@ TinyDesk 不包含账号、分析 SDK、广告、云同步或联网内容。便�
 ~/Library/Containers/com.kai.tinydesk/Data/Library/Application Support/TinyDesk/workspace.json
 ```
 
-控制中心底部可以直接在 Finder 中定位该目录。写入采用原子替换；如果工作区无法解析，程序会先保存
-带时间戳的损坏文件备份，再创建默认工作区。卸载应用或清理容器前，请先备份 `workspace.json`。
+资料库元数据与全文索引写入：
+
+```text
+~/Library/Containers/com.kai.tinydesk/Data/Library/Application Support/TinyDesk/Library/library.db
+~/Library/Containers/com.kai.tinydesk/Data/Library/Application Support/TinyDesk/Library/documents/
+```
+
+资料库与 `workspace.json` 完全隔离，互不影响。控制中心底部可以直接在 Finder 中定位工作区目录。
+写入采用原子替换；如果工作区无法解析，程序会先保存带时间戳的损坏文件备份，再创建默认工作区。
+卸载应用或清理容器前，请先备份 `workspace.json` 与资料库备份包。
 
 本地通知由 `UNUserNotificationCenter` 调度，日期内容不会发送给第三方。日历访问仅在用户主动导入、
 关联或同步时请求，并且只通过本机 EventKit 与所选系统日历交互。更完整的安全说明见 [SECURITY.md](./SECURITY.md)。
@@ -167,7 +207,7 @@ TinyDesk 不包含账号、分析 SDK、广告、云同步或联网内容。便�
 - DMG 使用 ad-hoc 签名，尚未经过 Developer ID 公证；首次启动需要按上述方式在 Finder 中确认。
 - 卡片不会覆盖全屏独占应用，也不会保持在普通应用窗口之上。
 - 系统日历的账号、共享、冲突解决仍由 macOS 日历管理；TinyDesk 不提供云端合并策略。
-- v1.0.0 与 v1.1.x 可以继续单独下载。旧版本不了解 v2.0 的农历、日历关联和置顶字段，降级前请备份工作区。
+- v1.0.0、v1.1.1 与 v2.0.0 均可继续单独下载。旧版本不了解后续版本新增的数据字段，降级前请备份工作区和资料库。
 
 ## 架构
 

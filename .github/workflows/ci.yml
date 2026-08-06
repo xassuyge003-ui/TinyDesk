@@ -32,6 +32,40 @@ jobs:
             Tests/DesktopCardWindowPolicyTests.swift \
             -o /tmp/TinyDeskDesktopCardWindowPolicyTests
           /tmp/TinyDeskDesktopCardWindowPolicyTests
+      - name: Run library backup ZIP tests
+        run: |
+          swiftc -parse-as-library \
+            Targets/TinyDesk/Sources/LibraryBackupArchive.swift \
+            Tests/LibraryBackupArchiveTests.swift \
+            -o /tmp/TinyDeskLibraryBackupArchiveTests
+          /tmp/TinyDeskLibraryBackupArchiveTests
+      - name: Run library backup round-trip tests
+        run: |
+          test_root="$(mktemp -d)"
+          trap 'rm -rf "$test_root"' EXIT
+          mkdir -p "$test_root/TinyDeskBackupTests/Sources"
+          cp -R TinyDeskCore "$test_root/TinyDeskCore"
+          cp Targets/TinyDesk/Sources/LibraryFileManager.swift "$test_root/TinyDeskBackupTests/Sources/"
+          cp Targets/TinyDesk/Sources/LibraryBackup.swift "$test_root/TinyDeskBackupTests/Sources/"
+          cp Targets/TinyDesk/Sources/LibraryBackupArchive.swift "$test_root/TinyDeskBackupTests/Sources/"
+          cp Tests/LibraryBackupRoundTripTests.swift "$test_root/TinyDeskBackupTests/Sources/main.swift"
+          cat > "$test_root/TinyDeskBackupTests/Package.swift" <<'PKG'
+          // swift-tools-version: 5.9
+          import PackageDescription
+          let package = Package(
+              name: "TinyDeskBackupTests",
+              platforms: [.macOS(.v14)],
+              dependencies: [.package(path: "../TinyDeskCore")],
+              targets: [
+                  .executableTarget(
+                      name: "TinyDeskBackupTests",
+                      dependencies: [.product(name: "TinyDeskCore", package: "TinyDeskCore")],
+                      path: "Sources"
+                  )
+              ]
+          )
+          PKG
+          cd "$test_root/TinyDeskBackupTests" && swift run
 
   build-workspace:
     runs-on: macos-14

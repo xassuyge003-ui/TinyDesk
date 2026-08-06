@@ -81,6 +81,25 @@ final class DesktopWindowManager: ObservableObject {
             }
             .store(in: &cancellables)
 
+        // 资料库文档 → 桌面摘要卡片。
+        NotificationCenter.default.publisher(for: LibraryDeskCardRequest.notificationName)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self,
+                      let documentID = notification.userInfo?[LibraryDeskCardRequest.documentIDKey] as? UUID
+                else { return }
+                let title = notification.userInfo?[LibraryDeskCardRequest.titleKey] as? String ?? "资料"
+                let summary = notification.userInfo?[LibraryDeskCardRequest.summaryKey] as? String ?? ""
+                let tags = notification.userInfo?[LibraryDeskCardRequest.tagsKey] as? [String] ?? []
+                self.createDeskRefCard(
+                    documentID: documentID,
+                    documentTitle: title,
+                    documentSummary: summary,
+                    documentTags: tags
+                )
+            }
+            .store(in: &cancellables)
+
         GlobalShortcutManager.shared.onShortcut = { [weak self] in
             Task { @MainActor in self?.createQuickSticky() }
         }
@@ -122,6 +141,33 @@ final class DesktopWindowManager: ObservableObject {
         reconcileWindows()
         focus(card.id)
         focusTextEditor(in: panels[card.id])
+    }
+
+    /// 从资料库创建桌面摘要卡片。
+    func createDeskRefCard(
+        documentID: UUID,
+        documentTitle: String,
+        documentSummary: String,
+        documentTags: [String]
+    ) {
+        // 避免重复添加同一文档。
+        if store.cards.contains(where: { $0.kind == .deskRef && $0.referenceDocumentID == documentID }) {
+            if let existing = store.cards.first(where: { $0.kind == .deskRef && $0.referenceDocumentID == documentID }) {
+                focus(existing.id)
+            }
+            return
+        }
+
+        let card = store.addCard(kind: .deskRef)
+        store.updateCard(card.id) {
+            $0.title = documentTitle
+            $0.referenceDocumentID = documentID
+            $0.referenceDocumentTitle = documentTitle
+            $0.referenceDocumentSummary = documentSummary
+            $0.referenceDocumentTags = documentTags
+        }
+        reconcileWindows()
+        focus(card.id)
     }
 
     func show(_ id: UUID, focus: Bool = false) {
@@ -182,6 +228,15 @@ final class DesktopWindowManager: ObservableObject {
             panel.orderOut(nil)
         }
         _ = store.persistNow()
+    }
+
+    /// 打开资料库窗口并选中指定文档（由 App 层监听处理）。
+    func openLibraryDocument(_ documentID: UUID) {
+        NotificationCenter.default.post(
+            name: LibraryDocumentOpenRequest.notificationName,
+            object: nil,
+            userInfo: [LibraryDocumentOpenRequest.documentIDKey: documentID]
+        )
     }
 
     fileprivate func panelDidBecomeKey(_ panel: NSWindow, cardID: UUID) {
@@ -293,17 +348,21 @@ final class DesktopWindowManager: ObservableObject {
 
     private func applyWindowLevel(_ panel: NSWindow, for cardID: UUID) {
         guard let card = store.card(withID: cardID) else {
-            panel.level = Self.desktopLevel
+            panel.level = DesktopCardWindowPolicy.desktopLevel
             return
         }
-        panel.level = desiredWindowLevel(for: card)
         if let panel = panel as? NSPanel {
-            panel.isFloatingPanel = card.resolvedIsAlwaysOnTop
+            DesktopCardWindowPolicy.applyWindowLevel(
+                to: panel,
+                isAlwaysOnTop: card.resolvedIsAlwaysOnTop
+            )
+        } else {
+            panel.level = desiredWindowLevel(for: card)
         }
     }
 
     private func desiredWindowLevel(for card: DesktopCard) -> NSWindow.Level {
-        card.resolvedIsAlwaysOnTop ? .floating : Self.desktopLevel
+        DesktopCardWindowPolicy.windowLevel(isAlwaysOnTop: card.resolvedIsAlwaysOnTop)
     }
 
     private func screenContainingMouse() -> NSScreen? {
@@ -373,6 +432,8 @@ final class DesktopWindowManager: ObservableObject {
             size = DesktopCardSizePreset.medium.size
         case .todo:
             size = DesktopCardSizePreset.large.size
+        case .deskRef:
+            size = DesktopCardSizePreset.small.size
         }
 
         let horizontalInset: CGFloat = 30
@@ -401,12 +462,11 @@ final class DesktopWindowManager: ObservableObject {
             return (NSSize(width: 220, height: 180), NSSize(width: 720, height: 560))
         case .todo:
             return (NSSize(width: 260, height: 240), NSSize(width: 800, height: 700))
+        case .deskRef:
+            return (NSSize(width: 220, height: 170), NSSize(width: 480, height: 360))
         }
     }
 
-    private static let desktopLevel = NSWindow.Level(
-        rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1
-    )
 }
 
 private final class DesktopCardPanel: NSPanel {

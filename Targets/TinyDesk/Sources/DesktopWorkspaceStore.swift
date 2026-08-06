@@ -67,6 +67,14 @@ final class DesktopWorkspaceStore: ObservableObject {
             card = .countdown()
         case .todo:
             card = .todo()
+        case .deskRef:
+            card = DesktopCard(
+                kind: .deskRef,
+                title: "资料",
+                referenceDocumentTitle: "资料",
+                createdAt: Date(),
+                updatedAt: Date()
+            )
         }
 
         var next = workspace

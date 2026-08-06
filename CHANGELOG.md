@@ -5,6 +5,39 @@
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-08-06
+
+### Added
+
+- 新增资料库子系统：独立三栏窗口，左侧目录树/标签/收藏/最近打开/回收站，中间文档列表，右侧纸张背景长文档编辑器。
+- 长文档正文以 RTFD 文件包保存，富文本格式与 RTFD 附件在本地保存、备份和恢复中完整往返。
+- SQLite FTS5 全文索引，支持标题、正文、标签、目录的中文单字搜索与高亮片段。
+- 十二套无横线国风花笺主题：素笺、宣纸、竹简、墨青、朱砂、夜墨、梅影、青花、兰亭、敦煌、松烟、云锦，仅影响显示与 PDF 导出外观。
+- 中文字体预设：仿宋（STFangsong）优先，降级宋体，英文保持 Apple 系统字体。
+- 导入支持 RTF/RTFD/TXT/Markdown；导出支持 RTF/RTFD/TXT/Markdown/PDF；资料库 ZIP 备份包可导出与恢复。
+- 桌面摘要卡片（deskRef）：只读展示文档标题、摘要与标签，双击打开资料库对应文档。
+- 资料库与 workspace.json 完全存储隔离，v2.0 桌面数据零回归。
+- 新增 `LibraryBackupArchiveTests` 覆盖 ZIP 往返与系统工具兼容性。
+
+### Changed
+
+- 资料库重构为紧凑三栏：移除重复横幅，明确资料库/目录/标签层级，采用暖墨色选中态，并新增专注写作模式。
+- 花笺主题统一覆盖资料导航、文档列表、编辑器与格式工具栏，并根据明暗纸面同步调整文字、控件和选中状态。
+- 编辑器移除横向稿纸线，以山水、竹、兰、梅、莲、松、祥云和印章等具有明确传统语义的矢量元素替代抽象装饰。
+- 字体入口直接显示当前仿宋、宋体或系统字体，并使用与当前花笺一致的中文排版和控件样式。
+- 控制中心与菜单栏新增“打开资料库”入口。
+- `DesktopCardKind` 新增 `deskRef`，旧版工作区读取未知类型卡片时安全跳过。
+- `project.yml` 链接系统 `libsqlite3`。
+- 资料库命令菜单：⌘N 新建文档、⌘⇧O 导入、⌘⇧E 导出、⌘F 搜索。
+
+### Fixed
+
+- 修复未置顶桌面卡片点击后被 `NSPanel` 重置为普通窗口层的问题；现在仍停留在桌面图标之上、普通应用窗口之下。
+- 修复资料库富文本编辑器在每次界面刷新时重新加载空内容，导致只能输入一段文字、后续输入被覆盖的问题。
+- 恢复备份时重新映射目录和标签 ID，避免恢复后的文档丢失分类或标签。
+- ZIP 备份改为保存完整 RTFD 文件包和附件，并继续兼容早期仅含 RTF 正文的备份。
+- 修复切换花笺后只有右侧编辑器改变、左侧和中部仍保持系统白色界面的问题。
+
 ## [2.0.0] - 2026-08-03
 
 ### Added
@@ -86,7 +119,8 @@
 
 - 所有系统扩展、联网聚合以及跨进程共享能力。
 
-[Unreleased]: https://github.com/xassuyge003-ui/TinyDesk/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/xassuyge003-ui/TinyDesk/compare/v2.5.0...HEAD
+[2.5.0]: https://github.com/xassuyge003-ui/TinyDesk/compare/v2.0.0...v2.5.0
 [2.0.0]: https://github.com/xassuyge003-ui/TinyDesk/compare/v1.1.1...v2.0.0
 [1.1.1]: https://github.com/xassuyge003-ui/TinyDesk/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/xassuyge003-ui/TinyDesk/compare/v1.0.0...v1.1.0

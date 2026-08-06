@@ -7,6 +7,7 @@ struct ControlCenterView: View {
     @EnvironmentObject private var windowManager: DesktopWindowManager
     @EnvironmentObject private var settings: TinyDeskSettings
     @EnvironmentObject private var calendarService: SystemCalendarService
+    @Environment(\.openWindow) private var openWindow
     @State private var pendingDeletion: DesktopCard?
     @State private var showsSettings = false
 
@@ -92,6 +93,10 @@ struct ControlCenterView: View {
                 }
                 Button("全部隐藏", systemImage: "eye.slash") {
                     store.hideAll()
+                }
+                Button("资料库", systemImage: "books.vertical") {
+                    openWindow(id: "library")
+                    NSApplication.shared.activate(ignoringOtherApps: true)
                 }
                 Button("设置", systemImage: "gearshape") {
                     showsSettings = true
@@ -380,6 +385,7 @@ extension DesktopCardKind {
         case .sticky: return "便签"
         case .countdown: return "重要日期"
         case .todo: return "待办"
+        case .deskRef: return "资料"
         }
     }
 }
@@ -390,6 +396,8 @@ private extension DesktopCard {
         case .sticky:
             let text = noteText.trimmingCharacters(in: .whitespacesAndNewlines)
             return text.isEmpty ? "空白便签" : text.replacingOccurrences(of: "\n", with: " ")
+        case .deskRef:
+            return referenceDocumentSummary ?? "资料库文档"
         case .countdown:
             guard let event = importantDates.sorted(by: importantDateOrder).first,
                   let days = event.daysUntilOccurrence()
