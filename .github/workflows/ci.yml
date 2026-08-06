@@ -44,7 +44,8 @@ jobs:
           test_root="$(mktemp -d)"
           trap 'rm -rf "$test_root"' EXIT
           mkdir -p "$test_root/TinyDeskBackupTests/Sources"
-          cp -R TinyDeskCore "$test_root/TinyDeskCore"
+          mkdir -p "$test_root/TinyDeskCore"
+          rsync -a --exclude '.build' --exclude '.swiftpm' TinyDeskCore/ "$test_root/TinyDeskCore/"
           cp Targets/TinyDesk/Sources/LibraryFileManager.swift "$test_root/TinyDeskBackupTests/Sources/"
           cp Targets/TinyDesk/Sources/LibraryBackup.swift "$test_root/TinyDeskBackupTests/Sources/"
           cp Targets/TinyDesk/Sources/LibraryBackupArchive.swift "$test_root/TinyDeskBackupTests/Sources/"
