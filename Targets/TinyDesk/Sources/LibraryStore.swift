@@ -10,6 +10,15 @@ enum LibraryViewMode {
     case trash
 }
 
+/// 全文搜索状态，区分“未搜索/搜索中/有结果/无结果/失败”。
+enum LibrarySearchState: Equatable {
+    case idle
+    case searching
+    case hasResults
+    case empty
+    case failed
+}
+
 /// 资料库主 Store。持有 SQLite 索引与 RTFD 文件管理器，向上暴露 UI 状态。
 ///
 /// 只读写 `Library/library.db` 与 `Library/documents/`，不触碰
@@ -22,6 +31,7 @@ final class LibraryStore: ObservableObject {
     @Published private(set) var tags: [LibraryTag] = []
     @Published private(set) var documents: [LibraryDocument] = []
     @Published private(set) var searchResults: [LibrarySearchResult] = []
+    @Published private(set) var searchState: LibrarySearchState = .idle
     @Published private(set) var storageMessage: String?
     @Published var selectedDocumentID: UUID?
     @Published var activeCategoryFilter: UUID?
@@ -46,21 +56,53 @@ final class LibraryStore: ObservableObject {
         let documentsDirectory = resolvedURL
             .deletingLastPathComponent()
             .appendingPathComponent(TinyDeskConst.libraryDocumentsDirectoryName, isDirectory: true)
-        self.fileManager = LibraryFileManager(documentsDirectory: documentsDirectory)
 
-        // 打开失败时退回临时目录的新库，避免资料库整体不可用；
-        // 原错误保留在提示中，临时库数据会在下次正常启动时重新从正式库读取。
+        // 打开失败时退回临时目录的新库，避免资料库整体不可用。
+        // 临时库必须与临时 documents 目录配套使用，正文不能写入正式目录，
+        // 否则会出现“索引在临时库、文件在正式目录”的数据错位。
+        var resolvedIndexer: FTSIndexer
+        var resolvedDocumentsDirectory = documentsDirectory
+        var openErrorMessage: String?
         do {
-            indexer = try FTSIndexer(url: resolvedURL)
+            resolvedIndexer = try FTSIndexer(url: resolvedURL)
         } catch {
-            let fallbackURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("tinydesk-library-\(UUID().uuidString).db")
-            indexer = (try? FTSIndexer(url: fallbackURL)) ?? .unavailable()
-            storageMessage = "资料库打开失败：\(error.localizedDescription)"
+            let fallbackDirectory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("tinydesk-library-\(UUID().uuidString)", isDirectory: true)
+            let fallbackURL = fallbackDirectory.appendingPathComponent("library.db")
+            resolvedIndexer = (try? FTSIndexer(url: fallbackURL)) ?? .unavailable()
+            resolvedDocumentsDirectory = fallbackDirectory
+                .appendingPathComponent(TinyDeskConst.libraryDocumentsDirectoryName, isDirectory: true)
+            openErrorMessage = "资料库打开失败，已使用临时数据目录（重启后重新读取正式库）：\(error.localizedDescription)"
         }
+        indexer = resolvedIndexer
+        fileManager = LibraryFileManager(documentsDirectory: resolvedDocumentsDirectory)
+        if let openErrorMessage {
+            storageMessage = openErrorMessage
+        }
+
         reloadAll()
+        repairIndexIfNeeded()
         purgeExpiredTrashIfNeeded()
         isReady = true
+    }
+
+    /// 报告一条用户可见的存储错误。
+    func report(_ message: String) {
+        storageMessage = message
+    }
+
+    /// 广播文档变更，驱动桌面摘要卡片同步。
+    private func postDocumentSync(_ document: LibraryDocument, status: DesktopReferenceStatus? = nil) {
+        let tagNames = document.tagIDs.compactMap { id in
+            tags.first(where: { $0.id == id })?.name
+        }
+        LibraryDocumentSyncNotification.post(
+            documentID: document.id,
+            title: document.title,
+            summary: document.summary,
+            tags: tagNames,
+            status: status
+        )
     }
 
     // MARK: 派生数据
@@ -78,7 +120,10 @@ final class LibraryStore: ObservableObject {
     }
 
     var recentDocuments: [LibraryDocument] {
-        activeDocuments.sorted { $0.updatedAt > $1.updatedAt }.prefix(10).map { $0 }
+        activeDocuments
+            .sorted { ($0.lastOpenedAt ?? .distantPast) > ($1.lastOpenedAt ?? .distantPast) }
+            .prefix(10)
+            .map { $0 }
     }
 
     /// 按当前视图模式 + 筛选（目录 + 标签 + 搜索）过滤的文档。
@@ -111,6 +156,10 @@ final class LibraryStore: ObservableObject {
             }
         }
 
+        // 搜索完成且无结果（或失败）时列表必须为空，不能回退显示全部文档。
+        if searchState == .empty || searchState == .failed {
+            return []
+        }
         if searchResults.isEmpty {
             return byTags
         }
@@ -132,22 +181,41 @@ final class LibraryStore: ObservableObject {
 
     // MARK: 文档操作
 
+    /// 创建文档。持久化成功后返回文档；失败返回 nil 并保留错误提示，
+    /// 不产生幽灵选中项。
     @discardableResult
     func createDocument(
         title: String = "未命名文档",
         attributedString: NSAttributedString = NSAttributedString()
-    ) -> LibraryDocument {
+    ) -> LibraryDocument? {
+        let plain = attributedString.string
         let now = Date()
         let document = LibraryDocument(
             title: title,
             paperTheme: defaultPaperTheme,
             fontPreset: .fangSong,
+            wordCount: plain.trimmingCharacters(in: .whitespacesAndNewlines).count,
+            summary: Self.summary(from: plain),
             createdAt: now,
             updatedAt: now
         )
-        persist(document: document, attributedString: attributedString)
-        selectedDocumentID = document.id
-        return document
+        do {
+            try persist(document: document, attributedString: attributedString)
+            selectedDocumentID = document.id
+            return document
+        } catch {
+            storageMessage = "创建文档失败：\(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    /// 摘要规则：去首尾空白、压缩换行、截取前 120 字。
+    static func summary(from text: String) -> String {
+        let cleaned = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: { $0.isNewline })
+            .joined(separator: " ")
+        return String(cleaned.prefix(120))
     }
 
     /// 还原备份中的一篇文档，同时保留创建/修改时间和全部元数据。
@@ -182,20 +250,28 @@ final class LibraryStore: ObservableObject {
             } else {
                 try fileManager.save(documentID: document.id, attributedString: attributedString)
             }
-            try indexer.insertDocument(document)
             let tagNames = tagIDs.compactMap { id in
                 tags.first(where: { $0.id == id })?.name
             }
             let categoryName = categoryID.flatMap { id in
                 categories.first(where: { $0.id == id })?.name
             } ?? ""
-            try indexer.index(
-                documentID: document.id,
-                title: document.title,
-                body: attributedString.string,
-                tags: tagNames,
-                category: categoryName
-            )
+            do {
+                try indexer.withTransaction {
+                    try indexer.insertDocument(document)
+                    try indexer.index(
+                        documentID: document.id,
+                        title: document.title,
+                        body: attributedString.string,
+                        tags: tagNames,
+                        category: categoryName
+                    )
+                }
+            } catch {
+                // 数据库写入失败时清理刚写入的正文文件，避免孤儿 RTFD。
+                try? fileManager.delete(documentID: document.id)
+                throw error
+            }
             documents.append(document)
             selectedDocumentID = document.id
             return document
@@ -231,8 +307,8 @@ final class LibraryStore: ObservableObject {
 
         guard fileWasWritten else { return }
         documents[index] = document
-        persistMetadata(document)
-        reindex(document: document)
+        persistMetadata(document, bodyText: attributedString?.string)
+        postDocumentSync(document)
         scheduleRefresh()
     }
 
@@ -244,12 +320,21 @@ final class LibraryStore: ObservableObject {
         document.updatedAt = Date()
         documents[index] = document
         persistMetadata(document)
-        reindex(document: document)
+        postDocumentSync(document)
         scheduleRefresh()
     }
 
     func loadAttributedString(for id: UUID) -> NSAttributedString? {
         fileManager.load(documentID: id)
+    }
+
+    /// 读取正文；文件缺失或损坏时向用户报告，避免静默显示空白文档。
+    func loadAttributedStringOrReport(for id: UUID) -> NSAttributedString? {
+        guard let attributed = fileManager.load(documentID: id) else {
+            storageMessage = "无法读取文档正文（文件缺失或已损坏）。"
+            return nil
+        }
+        return attributed
     }
 
     func loadAttributedString(for document: LibraryDocument) -> NSAttributedString? {
@@ -268,6 +353,7 @@ final class LibraryStore: ObservableObject {
         document.updatedAt = Date()
         documents[index] = document
         persistMetadata(document)
+        postDocumentSync(document, status: .trashed)
         if selectedDocumentID == id {
             selectedDocumentID = nil
         }
@@ -282,23 +368,34 @@ final class LibraryStore: ObservableObject {
         document.updatedAt = Date()
         documents[index] = document
         persistMetadata(document)
+        postDocumentSync(document)
         scheduleRefresh()
     }
 
-    /// 从回收站永久删除（物理删除文件 + 数据库行）。
+    /// 从回收站永久删除（物理删除文件 + 数据库行）。任一步失败都保留内存记录，
+    /// 避免“文件已删但记录仍在”或“记录已删但文件仍在”的单侧状态。
     func purgeDocument(_ id: UUID) {
         guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
+        var fileDeleted = false
+        var dbDeleted = false
         do {
             try fileManager.delete(documentID: id)
+            fileDeleted = true
         } catch {
             storageMessage = "删除文档文件失败：\(error.localizedDescription)"
         }
         do {
             try indexer.deleteDocument(id)
+            dbDeleted = true
         } catch {
             storageMessage = "删除文档索引失败：\(error.localizedDescription)"
         }
+        guard fileDeleted, dbDeleted else { return }
+        postDocumentSync(documents[index], status: .missing)
         documents.remove(at: index)
+        if selectedDocumentID == id {
+            selectedDocumentID = nil
+        }
         scheduleRefresh()
     }
 
@@ -315,12 +412,20 @@ final class LibraryStore: ObservableObject {
         do {
             let expired = try indexer.purgeExpiredTrash(before: cutoff)
             guard !expired.isEmpty else { return }
+            var fileFailures = 0
             for id in expired {
-                try? fileManager.delete(documentID: id)
+                do {
+                    try fileManager.delete(documentID: id)
+                } catch {
+                    fileFailures += 1
+                }
+            }
+            if fileFailures > 0 {
+                storageMessage = "回收站清理完成，但有 \(fileFailures) 个文档文件未能删除。"
             }
             reloadAll()
         } catch {
-            // 清理失败不阻塞启动。
+            storageMessage = "回收站清理失败：\(error.localizedDescription)"
         }
     }
 
@@ -344,25 +449,24 @@ final class LibraryStore: ObservableObject {
         category.name = newName
         categories[index] = category
         try? indexer.upsertCategory(category)
-        reindexCategoryDocuments(categoryID: id)
+        for documentIndex in documents.indices where documents[documentIndex].categoryID == id {
+            persistMetadata(documents[documentIndex])
+        }
         scheduleRefresh()
     }
 
     func deleteCategory(_ id: UUID) {
         try? indexer.deleteCategory(id)
         categories.removeAll { $0.id == id }
+        // 删除正在筛选的目录时清空筛选，避免列表悬空为空白。
+        if activeCategoryFilter == id {
+            activeCategoryFilter = nil
+        }
         for index in documents.indices where documents[index].categoryID == id {
             documents[index].categoryID = nil
             persistMetadata(documents[index])
         }
-        reindexCategoryDocuments(categoryID: id)
         scheduleRefresh()
-    }
-
-    private func reindexCategoryDocuments(categoryID: UUID) {
-        for document in documents where document.categoryID == categoryID {
-            reindex(document: document)
-        }
     }
 
     @discardableResult
@@ -384,28 +488,21 @@ final class LibraryStore: ObservableObject {
         tag.name = newName
         tags[index] = tag
         try? indexer.upsertTag(tag)
-        reindexDocumentsUsingTag(tagID: id)
+        for documentIndex in documents.indices where documents[documentIndex].tagIDs.contains(id) {
+            persistMetadata(documents[documentIndex])
+        }
         scheduleRefresh()
     }
 
     func deleteTag(_ id: UUID) {
         try? indexer.deleteTag(id)
         tags.removeAll { $0.id == id }
-        for index in documents.indices {
-            if documents[index].tagIDs.contains(id) {
-                documents[index].tagIDs.removeAll { $0 == id }
-                persistMetadata(documents[index])
-            }
+        for index in documents.indices where documents[index].tagIDs.contains(id) {
+            documents[index].tagIDs.removeAll { $0 == id }
+            persistMetadata(documents[index])
         }
         activeTagFilters.removeAll { $0 == id }
-        reindexDocumentsUsingTag(tagID: id)
         scheduleRefresh()
-    }
-
-    private func reindexDocumentsUsingTag(tagID: UUID) {
-        for document in documents where document.tagIDs.contains(tagID) {
-            reindex(document: document)
-        }
     }
 
     /// 为文档追加标签并返回文档是否变化。
@@ -415,7 +512,6 @@ final class LibraryStore: ObservableObject {
         else { return }
         documents[index].tagIDs.append(tagID)
         persistMetadata(documents[index])
-        reindex(document: documents[index])
         scheduleRefresh()
     }
 
@@ -425,7 +521,6 @@ final class LibraryStore: ObservableObject {
         else { return }
         documents[index].tagIDs.removeAll { $0 == tagID }
         persistMetadata(documents[index])
-        reindex(document: documents[index])
         scheduleRefresh()
     }
 
@@ -445,8 +540,10 @@ final class LibraryStore: ObservableObject {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             searchResults = []
+            searchState = .idle
             return
         }
+        searchState = .searching
         searchTask = Task { [weak self] in
             guard let self else { return }
             try? await Task.sleep(nanoseconds: 150_000_000)
@@ -457,10 +554,10 @@ final class LibraryStore: ObservableObject {
 
     private func performSearch(_ query: String) async {
         do {
-            let ids = try indexer.searchIDs(query: query, limit: 200)
+            let rows = try indexer.search(query: query, limit: 200)
             var results: [LibrarySearchResult] = []
-            for rowid in ids {
-                guard let document = document(forRowID: rowid) else { continue }
+            for (rowid, documentID) in rows {
+                guard let document = documents.first(where: { $0.id == documentID }) else { continue }
                 let snippet = try? indexer.snippet(for: rowid, query: query)
                 results.append(
                     LibrarySearchResult(
@@ -475,24 +572,34 @@ final class LibraryStore: ObservableObject {
                 )
             }
             searchResults = results
+            searchState = results.isEmpty ? .empty : .hasResults
         } catch {
+            searchResults = []
+            searchState = .failed
             storageMessage = "全文搜索失败：\(error.localizedDescription)"
         }
     }
 
-    private func document(forRowID rowid: Int64) -> LibraryDocument? {
-        // rowid 与 documents 数组顺序不一定一致；直接用数据库行查。
-        documents.first {
-            guard let documentRowID = try? indexer.fetchRowID(forDocumentID: $0.id) else { return false }
-            return documentRowID == rowid
-        }
+    /// 记录一次真实打开（“最近打开”视图按此排序）。
+    func markOpened(_ id: UUID) {
+        guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
+        var document = documents[index]
+        document.lastOpenedAt = Date()
+        documents[index] = document
+        persistMetadata(document)
+        scheduleRefresh()
+    }
+
+    /// 清除当前存储错误提示。
+    func dismissStorageMessage() {
+        storageMessage = nil
     }
 
     // MARK: 持久化
 
-    private func persist(document: LibraryDocument, attributedString: NSAttributedString) {
-        do {
-            try fileManager.save(documentID: document.id, attributedString: attributedString)
+    private func persist(document: LibraryDocument, attributedString: NSAttributedString) throws {
+        try fileManager.save(documentID: document.id, attributedString: attributedString)
+        try indexer.withTransaction {
             try indexer.insertDocument(document)
             let tagNames = document.tagIDs.compactMap { id in
                 tags.first(where: { $0.id == id })?.name
@@ -507,44 +614,95 @@ final class LibraryStore: ObservableObject {
                 tags: tagNames,
                 category: categoryName
             )
-            documents.append(document)
-        } catch {
-            storageMessage = "创建文档失败：\(error.localizedDescription)"
         }
+        documents.append(document)
     }
 
-    private func persistMetadata(_ document: LibraryDocument) {
+    private func persistMetadata(_ document: LibraryDocument, bodyText: String? = nil) {
         do {
-            try indexer.insertDocument(document)
-            try indexer.replaceDocumentTags(documentID: document.id, tagIDs: document.tagIDs)
+            try indexer.withTransaction {
+                try indexer.insertDocument(document)
+                try indexer.replaceDocumentTags(documentID: document.id, tagIDs: document.tagIDs)
+                let body = bodyText ?? fileManager.load(documentID: document.id)?.string ?? ""
+                let tagNames = document.tagIDs.compactMap { id in
+                    tags.first(where: { $0.id == id })?.name
+                }
+                let categoryName = document.categoryID.flatMap { id in
+                    categories.first(where: { $0.id == id })?.name
+                } ?? ""
+                try indexer.index(
+                    documentID: document.id,
+                    title: document.title,
+                    body: body,
+                    tags: tagNames,
+                    category: categoryName
+                )
+            }
         } catch {
             storageMessage = "保存文档元数据失败：\(error.localizedDescription)"
         }
     }
 
-    private func reindex(document: LibraryDocument) {
-        let (body, tagNames, categoryName) = indexText(for: document, attributedString: nil)
-        // 从文件读取正文。
-        let actualBody: String
-        if let attributed = fileManager.load(documentID: document.id) {
-            actualBody = attributed.string
-        } else {
-            actualBody = body
-        }
+    /// 启动时修复历史版本遗留的索引不一致：清理孤儿 FTS 行，为缺失索引的文档重建。
+    private func repairIndexIfNeeded() {
         do {
-            try indexer.index(
-                documentID: document.id,
-                title: document.title,
-                body: actualBody,
-                tags: tagNames,
-                category: categoryName
-            )
+            let orphaned = try indexer.purgeOrphanedFTSRows()
+            let missing = try indexer.documentsMissingFTSIndex()
+            var rebuilt = 0
+            for id in missing {
+                guard let document = documents.first(where: { $0.id == id }) else { continue }
+                let body = fileManager.load(documentID: id)?.string ?? ""
+                let tagNames = document.tagIDs.compactMap { tagID in
+                    tags.first(where: { $0.id == tagID })?.name
+                }
+                let categoryName = document.categoryID.flatMap { categoryID in
+                    categories.first(where: { $0.id == categoryID })?.name
+                } ?? ""
+                try? indexer.index(
+                    documentID: id,
+                    title: document.title,
+                    body: body,
+                    tags: tagNames,
+                    category: categoryName
+                )
+                rebuilt += 1
+            }
+            if orphaned > 0 || rebuilt > 0 {
+                storageMessage = "已修复资料库全文索引（清理 \(orphaned) 个失效条目，重建 \(rebuilt) 篇文档）。"
+            }
         } catch {
-            storageMessage = "更新文档索引失败：\(error.localizedDescription)"
+            storageMessage = "资料库索引修复失败：\(error.localizedDescription)"
         }
     }
 
-    private func reloadAll() {
+    /// 备份恢复失败时回滚：删除本次创建的文档（文件+索引）与新增的目录、标签。
+    func rollbackRestore(documentIDs: [UUID], categoryIDs: Set<UUID>, tagIDs: Set<UUID>) {
+        for id in documentIDs {
+            try? fileManager.delete(documentID: id)
+            try? indexer.deleteDocument(id)
+            documents.removeAll { $0.id == id }
+            if selectedDocumentID == id {
+                selectedDocumentID = nil
+            }
+        }
+        for categoryID in categoryIDs where categories.contains(where: { $0.id == categoryID }) {
+            try? indexer.deleteCategory(categoryID)
+            categories.removeAll { $0.id == categoryID }
+            for index in documents.indices where documents[index].categoryID == categoryID {
+                documents[index].categoryID = nil
+            }
+        }
+        for tagID in tagIDs where tags.contains(where: { $0.id == tagID }) {
+            try? indexer.deleteTag(tagID)
+            tags.removeAll { $0.id == tagID }
+            for index in documents.indices {
+                documents[index].tagIDs.removeAll { $0 == tagID }
+            }
+        }
+        scheduleRefresh()
+    }
+
+    func reloadAll() {
         do {
             categories = try indexer.loadAllCategories()
             tags = try indexer.loadAllTags()

@@ -1,104 +1,119 @@
 import AppKit
+import CoreGraphics
 import Foundation
 import TinyDeskCore
 
-/// 用 NSPrintOperation 把文档按纸张主题渲染为 PDF。
+/// 用 NSLayoutManager 分页，把文档按纸张主题渲染为多页 PDF。
 enum LibraryPDFRenderer {
     /// 把文档正文渲染为 PDF 数据，背景使用文档的纸张主题。
+    /// 长文档按声明纸张尺寸分页输出，不允许出现单页数千点的非标准 PDF。
     static func render(
         attributedString: NSAttributedString,
         paperTheme: PaperTheme
     ) throws -> Data {
         let style = PaperThemeStyle.style(for: paperTheme)
 
-        // 用 NSTextView 承载正文，背景用纸张色。
-        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 612, height: 792))
-        textView.isEditable = false
-        textView.isSelectable = false
-        textView.drawsBackground = false
-        textView.textColor = style.textColor
-        textView.textContainerInset = NSSize(width: 40, height: 40)
-        textView.textStorage?.setAttributedString(
-            RichTextContrast.displayAttributedString(
-                from: attributedString,
-                background: style.backgroundColor,
-                fallback: style.textColor
-            )
+        let pageSize = NSSize(width: 612, height: 792)
+        let horizontalMargin: CGFloat = 40
+        let verticalMargin: CGFloat = 40
+        let contentWidth = pageSize.width - horizontalMargin * 2
+        let contentHeight = pageSize.height - verticalMargin * 2
+
+        let display = RichTextContrast.displayAttributedString(
+            from: attributedString,
+            background: style.backgroundColor,
+            fallback: style.textColor
         )
-        textView.frame = NSRect(
-            x: 0, y: 0,
-            width: 612,
-            height: max(792, textView.attributedString().size().height + 120)
+        let textStorage = NSTextStorage(attributedString: display)
+        let layoutManager = NSLayoutManager()
+        let container = NSTextContainer(
+            size: NSSize(width: contentWidth, height: CGFloat.greatestFiniteMagnitude)
         )
+        container.lineFragmentPadding = 0
+        layoutManager.addTextContainer(container)
+        textStorage.addLayoutManager(layoutManager)
+        layoutManager.ensureLayout(for: container)
 
-        let container = PaperBackedView(textView: textView, theme: paperTheme)
-        container.frame = textView.frame
+        let usedHeight = layoutManager.usedRect(for: container).height
+        let totalTextHeight = verticalMargin * 2 + usedHeight
+        let pageCount = max(1, Int(ceil(totalTextHeight / contentHeight)))
 
-        let printInfo = NSPrintInfo.shared.copy() as! NSPrintInfo
-        printInfo.paperSize = NSSize(width: 612, height: 792)
-        printInfo.topMargin = 0
-        printInfo.bottomMargin = 0
-        printInfo.leftMargin = 0
-        printInfo.rightMargin = 0
-        printInfo.horizontalPagination = .fit
-        printInfo.verticalPagination = .automatic
-        printInfo.isHorizontallyCentered = false
-        printInfo.isVerticallyCentered = false
-
-        let operation = NSPrintOperation(view: container, printInfo: printInfo)
-        operation.showsPrintPanel = false
-        operation.showsProgressPanel = false
-
-        guard let renderedView = operation.view else {
-            throw LibraryPDFError.printOperationFailed
+        let data = NSMutableData()
+        guard let consumer = CGDataConsumer(data: data as CFMutableData) else {
+            throw LibraryPDFError.pdfContextFailed
         }
-        let pdfData = renderedView.dataWithPDF(
-            inside: container.bounds
-        )
-        return pdfData
-    }
-}
-
-/// 带纸张主题背景的视图，用于 PDF 渲染。
-private final class PaperBackedView: NSView {
-    private let textView: NSTextView
-    private let theme: PaperTheme
-
-    init(textView: NSTextView, theme: PaperTheme) {
-        self.textView = textView
-        self.theme = theme
-        super.init(frame: textView.frame)
-        wantsLayer = true
-        addSubview(textView)
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        let style = PaperThemeStyle.style(for: theme)
-        style.backgroundColor.setFill()
-        bounds.fill()
-
-        // 深色主题增加轻微亮部层次，不绘制会干扰阅读的横向行线。
-        if [.moQing, .yeMo, .songYan, .yunJin].contains(theme) {
-            let gradient = NSGradient(
-                starting: style.accentColor.withAlphaComponent(0.12),
-                ending: NSColor.clear
-            )
-            gradient?.draw(in: bounds, angle: -60)
+        var mediaBox = CGRect(x: 0, y: 0, width: pageSize.width, height: pageSize.height)
+        guard let cgContext = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else {
+            throw LibraryPDFError.pdfContextFailed
         }
+
+        for page in 0..<pageCount {
+            cgContext.beginPDFPage(nil)
+            let nsContext = NSGraphicsContext(cgContext: cgContext, flipped: false)
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = nsContext
+
+            // 纸张背景
+            style.backgroundColor.setFill()
+            NSBezierPath(rect: NSRect(x: 0, y: 0, width: pageSize.width, height: pageSize.height)).fill()
+            if [.moQing, .yeMo, .songYan, .yunJin].contains(paperTheme) {
+                if let gradient = NSGradient(
+                    starting: style.accentColor.withAlphaComponent(0.12),
+                    ending: NSColor.clear
+                ) {
+                    gradient.draw(
+                        in: NSRect(x: 0, y: 0, width: pageSize.width, height: pageSize.height),
+                        angle: -60
+                    )
+                }
+            }
+
+            if usedHeight > 0 {
+                let sliceRect = NSRect(
+                    x: 0,
+                    y: CGFloat(page) * contentHeight,
+                    width: contentWidth,
+                    height: contentHeight
+                )
+                let glyphRange = layoutManager.glyphRange(forBoundingRect: sliceRect, in: container)
+
+                // 页面区域裁剪：PDF 坐标原点在左下，文本容器坐标 y 向下。
+                nsContext.cgContext.saveGState()
+                nsContext.cgContext.clip(
+                    to: CGRect(
+                        x: horizontalMargin,
+                        y: verticalMargin,
+                        width: contentWidth,
+                        height: contentHeight
+                    )
+                )
+                nsContext.cgContext.translateBy(
+                    x: horizontalMargin,
+                    y: verticalMargin + contentHeight
+                )
+                nsContext.cgContext.scaleBy(x: 1, y: -1)
+                nsContext.cgContext.translateBy(x: 0, y: -CGFloat(page) * contentHeight)
+
+                layoutManager.drawBackground(forGlyphRange: glyphRange, at: .zero)
+                layoutManager.drawGlyphs(forGlyphRange: glyphRange, at: .zero)
+                nsContext.cgContext.restoreGState()
+            }
+
+            NSGraphicsContext.restoreGraphicsState()
+            cgContext.endPDFPage()
+        }
+        cgContext.closePDF()
+        return data as Data
     }
 }
 
 /// PDF 渲染错误。
 enum LibraryPDFError: LocalizedError {
-    case printOperationFailed
+    case pdfContextFailed
 
     var errorDescription: String? {
         switch self {
-        case .printOperationFailed: return "无法创建打印操作。"
+        case .pdfContextFailed: return "无法创建 PDF 绘图上下文。"
         }
     }
 }

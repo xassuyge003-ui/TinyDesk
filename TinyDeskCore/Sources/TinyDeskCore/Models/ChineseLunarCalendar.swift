@@ -42,30 +42,74 @@ public enum ChineseLunarCalendar {
         leapMonthPolicy: ImportantDateLunarLeapMonthPolicy,
         calendar: Calendar = .current
     ) -> Date? {
-        guard let start = gregorianDate(year: year, month: 1, day: 1, calendar: calendar),
-              let end = gregorianDate(year: year + 1, month: 1, day: 1, calendar: calendar)
-        else { return nil }
-
-        if let exact = date(
-            between: start,
-            and: end,
+        occurrences(
+            inGregorianYear: year,
             month: month,
             day: day,
             isLeapMonth: isLeapMonth,
+            leapMonthPolicy: leapMonthPolicy,
             calendar: calendar
-        ) {
-            return exact
+        ).min()
+    }
+
+    /// 返回目标公历年内该农历月日的全部发生日。
+    ///
+    /// 冬月/腊月可能跨公历年：例如腊月既可能出现在年初（上一农历年），
+    /// 也可能出现在年末（本农历年），同一年内可能有两个发生日。
+    /// 供 `occurs(on:)` 判断任意一天是否是发生日。
+    public static func occurrences(
+        inGregorianYear year: Int,
+        month: Int,
+        day: Int,
+        isLeapMonth: Bool,
+        leapMonthPolicy: ImportantDateLunarLeapMonthPolicy,
+        calendar: Calendar = .current
+    ) -> [Date] {
+        guard let start = gregorianDate(year: year, month: 1, day: 1, calendar: calendar),
+              let end = gregorianDate(year: year + 1, month: 1, day: 1, calendar: calendar)
+        else { return [] }
+
+        // 目标农历月可能跨公历年：冬月/腊月会落在次年 1 月，而窗口内 1 月初
+        // 出现的冬月/腊月属于上一农历年。因此按相邻农历年逐一扫描，
+        // 再过滤出落在目标公历年窗口内的日期，避免错配或把小月回退误用。
+        var candidates: [Date] = []
+        for lunarYear in (year - 1)...(year + 1) {
+            guard let newYear = lunarNewYear(in: lunarYear, calendar: calendar),
+                  let nextNewYear = lunarNewYear(in: lunarYear + 1, calendar: calendar)
+            else { continue }
+            guard let exact = date(
+                between: newYear,
+                and: nextNewYear,
+                month: month,
+                day: day,
+                isLeapMonth: isLeapMonth,
+                calendar: calendar
+            ), exact >= start, exact < end else { continue }
+            candidates.append(exact)
         }
 
-        guard isLeapMonth, leapMonthPolicy == .regularMonthFallback else { return nil }
-        return date(
-            between: start,
-            and: end,
-            month: month,
-            day: day,
-            isLeapMonth: false,
-            calendar: calendar
-        )
+        if !candidates.isEmpty {
+            return candidates.sorted()
+        }
+
+        guard isLeapMonth, leapMonthPolicy == .regularMonthFallback else { return [] }
+        // 该公历年内没有对应的闰月时，按同名普通月补过，仍限制在目标公历年窗口内。
+        var fallbackCandidates: [Date] = []
+        for lunarYear in (year - 1)...(year + 1) {
+            guard let newYear = lunarNewYear(in: lunarYear, calendar: calendar),
+                  let nextNewYear = lunarNewYear(in: lunarYear + 1, calendar: calendar)
+            else { continue }
+            guard let fallback = date(
+                between: newYear,
+                and: nextNewYear,
+                month: month,
+                day: day,
+                isLeapMonth: false,
+                calendar: calendar
+            ), fallback >= start, fallback < end else { continue }
+            fallbackCandidates.append(fallback)
+        }
+        return fallbackCandidates.sorted()
     }
 
     /// `lunarYear` 为农历正月初一所在的公历年份，例如 2026 农历年。
@@ -142,7 +186,8 @@ public enum ChineseLunarCalendar {
     }
 
     private static func lunarYear(containing date: Date, calendar: Calendar) -> Int {
-        let gregorianYear = calendar.component(.year, from: date)
+        let gregorian = gregorianCalendar(timeZone: calendar.timeZone)
+        let gregorianYear = gregorian.component(.year, from: date)
         guard let currentYearNewYear = lunarNewYear(in: gregorianYear, calendar: calendar) else {
             return gregorianYear
         }
@@ -168,13 +213,21 @@ public enum ChineseLunarCalendar {
     }
 
     private static func gregorianDate(year: Int, month: Int, day: Int, calendar: Calendar) -> Date? {
+        // 年份语义固定为公历绝对年；仅沿用传入日历的时区，避免佛历/和历等纪年错位。
+        let gregorian = gregorianCalendar(timeZone: calendar.timeZone)
         var components = DateComponents()
-        components.calendar = calendar
-        components.timeZone = calendar.timeZone
+        components.calendar = gregorian
+        components.timeZone = gregorian.timeZone
         components.year = year
         components.month = month
         components.day = day
-        return calendar.date(from: components).map(calendar.startOfDay(for:))
+        return gregorian.date(from: components).map(gregorian.startOfDay(for:))
+    }
+
+    private static func gregorianCalendar(timeZone: TimeZone) -> Calendar {
+        var value = Calendar(identifier: .gregorian)
+        value.timeZone = timeZone
+        return value
     }
 
     private static func chineseCalendar(timeZone: TimeZone) -> Calendar {

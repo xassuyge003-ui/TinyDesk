@@ -56,7 +56,7 @@ check(archiveData.count > 0, "备份 ZIP 生成")
 // 解包
 let (bundle, restoredBodies) = try LibraryBackup.extractArchive(data: archiveData, fileManager: fm)
 check(bundle.documents.first?.id == docID, "备份元数据往返一致")
-let archiveEntries = LibraryBackupArchive.extract(archiveData)
+let archiveEntries = try LibraryBackupArchive.extract(archiveData)
 check(
     archiveEntries.contains { $0.path == "documents/\(docID.uuidString).rtfd/TXT.rtf" },
     "备份保留完整 RTFD 文件包结构"

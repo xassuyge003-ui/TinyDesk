@@ -15,6 +15,8 @@ final class RichTextEditorController: ObservableObject {
     @Published private(set) var isReady = false
     /// 当前资料库文档的字体预设（工具栏高亮用）。
     @Published var currentFontPreset: RichTextDefaults.FontPreset = .fangSong
+    /// 用户最近一次显式选择的文字颜色；自适应前景色不得覆盖它。
+    fileprivate(set) var userSelectedForeground: NSColor?
 
     private weak var textView: NSTextView?
 
@@ -33,6 +35,7 @@ final class RichTextEditorController: ObservableObject {
     ) {
         guard let textView else { return }
         currentFontPreset = fontPreset
+        userSelectedForeground = nil
         textView.textStorage?.setAttributedString(attributedString)
         var typingAttributes = RichTextDefaults.attributes(fontSize: 16, preset: fontPreset)
         typingAttributes[.foregroundColor] = defaultTextColor
@@ -124,12 +127,15 @@ final class RichTextEditorController: ObservableObject {
     }
 
     func applyForegroundColor(_ color: NSColor) {
+        userSelectedForeground = color
         guard let textView else { return }
         applyAttribute(.foregroundColor, value: color, in: textView)
     }
 
     func clearFormatting() {
         guard let textView else { return }
+        userSelectedForeground = nil
+        currentFontPreset = .system
         let defaults = RichTextDefaults.attributes(fontSize: textView.font?.pointSize ?? 16)
         let removableKeys: [NSAttributedString.Key] = [
             .font,
@@ -140,6 +146,9 @@ final class RichTextEditorController: ObservableObject {
             .strokeColor,
             .strokeWidth,
             .obliqueness,
+            .paragraphStyle,
+            .kern,
+            .baselineOffset,
             RichTextDefaults.syntheticItalicAttribute,
             .shadow,
             .link,
@@ -174,7 +183,7 @@ final class RichTextEditorController: ObservableObject {
         let traits = NSFontManager.shared.traits(of: font)
 
         format = FormatState(
-            isBold: traits.contains(.boldFontMask),
+            isBold: fontHasBoldTrait(font),
             isItalic: traits.contains(.italicFontMask)
                 || styleIsEnabled(attributes[RichTextDefaults.syntheticItalicAttribute])
                 || RichTextDefaults.isSyntheticItalic(font)
@@ -183,6 +192,14 @@ final class RichTextEditorController: ObservableObject {
             isStruckThrough: styleIsEnabled(attributes[.strikethroughStyle]),
             foregroundColor: attributes[.foregroundColor] as? NSColor ?? textView.textColor ?? .labelColor
         )
+    }
+
+    /// 判断字体是否具有加粗语义，兼容半粗体（PingFangSC-Semibold 等）。
+    private func fontHasBoldTrait(_ font: NSFont) -> Bool {
+        let traits = NSFontManager.shared.traits(of: font)
+        if traits.contains(.boldFontMask) { return true }
+        let name = font.fontName.lowercased()
+        return name.contains("semibold") || name.contains("bold")
     }
 
     private func applyFontTrait(_ trait: NSFontTraitMask, adding: Bool) {
@@ -229,7 +246,20 @@ final class RichTextEditorController: ObservableObject {
         let converted: NSFont
 
         if adding {
-            converted = manager.convert(sourceFont, toHaveTrait: trait)
+            if trait == .boldFontMask {
+                let candidate = manager.convert(sourceFont, toHaveTrait: .boldFontMask)
+                if manager.traits(of: candidate).contains(.boldFontMask) {
+                    converted = candidate
+                } else if let fallback = RichTextDefaults.boldFallbackFont(from: sourceFont) {
+                    // 仿宋/宋体等没有粗体字重的字体：回退到可加粗的中文字体，
+                    // 保证视觉加粗与 RTF 持久化，工具栏状态保持正确。
+                    converted = fallback
+                } else {
+                    converted = candidate
+                }
+            } else {
+                converted = manager.convert(sourceFont, toHaveTrait: trait)
+            }
         } else {
             let withoutTrait = manager.convert(sourceFont, toNotHaveTrait: trait)
             if !manager.traits(of: withoutTrait).contains(trait) {
@@ -264,7 +294,14 @@ final class RichTextEditorController: ObservableObject {
             typing[.font] = convertedItalicFont(font, adding: adding, manager: manager)
             typing.removeValue(forKey: .obliqueness)
             if adding {
-                typing[RichTextDefaults.syntheticItalicAttribute] = true
+                // 只有非原生斜体才需要合成斜体标记，避免 RTF 落盘时改写原生斜体。
+                let isNativeItalic = manager.traits(of: font).contains(.italicFontMask)
+                    || RichTextDefaults.isSyntheticItalic(font)
+                if isNativeItalic {
+                    typing.removeValue(forKey: RichTextDefaults.syntheticItalicAttribute)
+                } else {
+                    typing[RichTextDefaults.syntheticItalicAttribute] = true
+                }
             } else {
                 typing.removeValue(forKey: RichTextDefaults.syntheticItalicAttribute)
             }
@@ -284,12 +321,18 @@ final class RichTextEditorController: ObservableObject {
 
         storage.beginEditing()
         storage.removeAttribute(.obliqueness, range: range)
-        if adding {
-            storage.addAttribute(RichTextDefaults.syntheticItalicAttribute, value: true, range: range)
-        } else {
-            storage.removeAttribute(RichTextDefaults.syntheticItalicAttribute, range: range)
-        }
         for (subrange, font) in runs {
+            if adding {
+                let isNativeItalic = manager.traits(of: font).contains(.italicFontMask)
+                    || RichTextDefaults.isSyntheticItalic(font)
+                if isNativeItalic {
+                    storage.removeAttribute(RichTextDefaults.syntheticItalicAttribute, range: subrange)
+                } else {
+                    storage.addAttribute(RichTextDefaults.syntheticItalicAttribute, value: true, range: subrange)
+                }
+            } else {
+                storage.removeAttribute(RichTextDefaults.syntheticItalicAttribute, range: subrange)
+            }
             storage.addAttribute(
                 .font,
                 value: convertedItalicFont(font, adding: adding, manager: manager),
@@ -385,6 +428,9 @@ final class RichTextEditorController: ObservableObject {
     private func selectionHasFontTrait(_ trait: NSFontTraitMask, in textView: NSTextView) -> Bool {
         allSelectedRuns(in: textView) { attributes in
             let font = attributes[.font] as? NSFont ?? textView.font ?? NSFont.systemFont(ofSize: 16)
+            if trait == .boldFontMask {
+                return fontHasBoldTrait(font)
+            }
             return NSFontManager.shared.traits(of: font).contains(trait)
         }
     }
@@ -497,17 +543,26 @@ enum RichTextContrast {
     static func applyTemporaryForegrounds(
         to textView: NSTextView,
         background: NSColor,
-        fallback: NSColor
+        fallback: NSColor,
+        range: NSRange? = nil
     ) {
         guard let storage = textView.textStorage,
               let layoutManager = textView.layoutManager
         else { return }
 
-        let range = NSRange(location: 0, length: storage.length)
-        layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: range)
-        guard range.length > 0 else { return }
+        let fullRange = NSRange(location: 0, length: storage.length)
+        let target: NSRange
+        if let range {
+            let intersection = NSIntersectionRange(range, fullRange)
+            target = intersection.length > 0 ? intersection : NSRange(location: 0, length: 0)
+        } else {
+            target = fullRange
+        }
+        if target.length == 0 { return }
 
-        storage.enumerateAttribute(.foregroundColor, in: range) { value, subrange, _ in
+        layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: target)
+
+        storage.enumerateAttribute(.foregroundColor, in: target) { value, subrange, _ in
             let color = value as? NSColor
             if needsAdaptiveForeground(color, on: background) {
                 layoutManager.addTemporaryAttribute(
@@ -647,6 +702,7 @@ struct RichTextEditor: NSViewRepresentable {
             lastRichTextData = richTextData
             lastPlainText = fallbackText
             didLoad = true
+            parent.controller.userSelectedForeground = nil
             parent.controller.refreshSelectionState()
             refreshAdaptiveForeground(in: textView)
         }
@@ -661,14 +717,17 @@ struct RichTextEditor: NSViewRepresentable {
             lastPlainText = textView.string
             parent.onChange(data, textView.string)
             parent.controller.refreshSelectionState()
-            refreshAdaptiveForeground(in: textView)
+            // 只处理本次编辑范围，避免每次键入都扫描并重算全文临时前景色。
+            let editedRange = textView.textStorage?.editedRange
+                ?? NSRange(location: 0, length: textView.string.utf16.count)
+            refreshAdaptiveForeground(in: textView, editedRange: editedRange)
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
             parent.controller.refreshSelectionState()
         }
 
-        func refreshAdaptiveForeground(in textView: NSTextView) {
+        func refreshAdaptiveForeground(in textView: NSTextView, editedRange: NSRange? = nil) {
             guard let background = parent.adaptiveBackgroundColor else {
                 if let layoutManager = textView.layoutManager {
                     layoutManager.removeTemporaryAttribute(
@@ -681,18 +740,22 @@ struct RichTextEditor: NSViewRepresentable {
 
             let fallback = parent.defaultTextColor ?? .labelColor
             textView.textColor = fallback
-            var typingAttributes = textView.typingAttributes
-            if RichTextContrast.needsAdaptiveForeground(
-                typingAttributes[.foregroundColor] as? NSColor,
-                on: background
-            ) {
-                typingAttributes[.foregroundColor] = fallback
-                textView.typingAttributes = typingAttributes
+            // 用户显式选择的颜色不被自适应前景色覆盖。
+            if parent.controller.userSelectedForeground == nil {
+                var typingAttributes = textView.typingAttributes
+                if RichTextContrast.needsAdaptiveForeground(
+                    typingAttributes[.foregroundColor] as? NSColor,
+                    on: background
+                ) {
+                    typingAttributes[.foregroundColor] = fallback
+                    textView.typingAttributes = typingAttributes
+                }
             }
             RichTextContrast.applyTemporaryForegrounds(
                 to: textView,
                 background: background,
-                fallback: fallback
+                fallback: fallback,
+                range: editedRange
             )
         }
     }
@@ -762,6 +825,23 @@ enum RichTextDefaults {
         guard font.pointSize != pointSize else { return font }
         let descriptor = font.fontDescriptor.withSize(pointSize)
         return NSFont(descriptor: descriptor, size: pointSize) ?? font
+    }
+
+    /// 字体族没有粗体字重时的加粗回退：先尝试加粗字重转换，
+    /// 仿宋/宋体回退到苹方半粗体，保证中文视觉加粗。
+    static func boldFallbackFont(from font: NSFont) -> NSFont? {
+        let family = font.familyName ?? ""
+        let name = font.fontName
+        let chineseFamilies = ["STFangsong", "STSongti-SC", "FangSong", "Songti SC", "Songti"]
+        if chineseFamilies.contains(where: { family == $0 || name == $0 }) {
+            return NSFont(name: "PingFangSC-Semibold", size: font.pointSize)
+                ?? NSFont.systemFont(ofSize: font.pointSize, weight: .semibold)
+        }
+        let heavier = NSFontManager.shared.convertWeight(true, of: font)
+        if NSFontManager.shared.traits(of: heavier).contains(.boldFontMask) {
+            return heavier
+        }
+        return nil
     }
 
     static func attributes(fontSize: CGFloat) -> [NSAttributedString.Key: Any] {

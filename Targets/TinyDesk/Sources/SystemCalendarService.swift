@@ -30,6 +30,8 @@ final class SystemCalendarService: ObservableObject {
     @Published private(set) var authorizationStatus: EKAuthorizationStatus
     @Published private(set) var calendars: [SystemCalendarDescriptor] = []
     @Published private(set) var lastError: String?
+    /// 最近一次读取候选事件时被跳过的内容说明（重复规则不受支持/带具体时间）。
+    @Published private(set) var lastImportNote: String?
 
     private let eventStore = EKEventStore()
     private var changeObserver: NSObjectProtocol?
@@ -120,10 +122,20 @@ final class SystemCalendarService: ObservableObject {
         let predicate = eventStore.predicateForEvents(withStart: start, end: end, calendars: selectedCalendars)
         let events = eventStore.events(matching: predicate)
         var uniqueEvents: [String: EKEvent] = [:]
+        var skippedTimedCount = 0
+        var skippedRuleCount = 0
 
         for event in events {
             guard !event.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-            guard supportsImportantDateRecurrence(event) else { continue }
+            guard supportsImportantDateRecurrence(event) else {
+                skippedRuleCount += 1
+                continue
+            }
+            // TinyDesk 重要日期是日期级模型；带具体时刻的事件不能静默变成全天。
+            guard event.isAllDay else {
+                skippedTimedCount += 1
+                continue
+            }
             let externalIdentifier = event.calendarItemExternalIdentifier?.isEmpty == false
                 ? event.calendarItemExternalIdentifier
                 : nil
@@ -132,6 +144,15 @@ final class SystemCalendarService: ObservableObject {
             if let existing = uniqueEvents[key], existing.startDate <= event.startDate { continue }
             uniqueEvents[key] = event
         }
+
+        var notes: [String] = []
+        if skippedRuleCount > 0 {
+            notes.append("已跳过 \(skippedRuleCount) 个重复规则不受支持的事件（只支持每年一次、无结束日期的规则）。")
+        }
+        if skippedTimedCount > 0 {
+            notes.append("已跳过 \(skippedTimedCount) 个带具体时间的事件（TinyDesk 只支持全天重要日期）。")
+        }
+        lastImportNote = notes.isEmpty ? nil : notes.joined(separator: " ")
 
         return uniqueEvents.values
             .map(candidate(from:))
@@ -177,6 +198,7 @@ final class SystemCalendarService: ObservableObject {
             guard let source = systemEvent(for: link) else {
                 var unlinked = local
                 unlinked.systemCalendarLink = nil
+                lastError = "系统日历中的“\(local.title)”事件已不存在，已解除本地关联。"
                 return unlinked
             }
             return merging(local: local, source: source)
@@ -213,9 +235,7 @@ final class SystemCalendarService: ObservableObject {
             ? event.calendarItemExternalIdentifier
             : nil
         let eventIdentifier = event.eventIdentifier ?? externalIdentifier ?? UUID().uuidString
-        let recurrence: ImportantDateRecurrence = event.recurrenceRules?.contains {
-            $0.frequency == .yearly
-        } == true ? .yearly : .once
+        let recurrence: ImportantDateRecurrence = isSimpleYearlyRecurrence(event) ? .yearly : .once
         return SystemCalendarCandidate(
             id: "\(event.calendar.calendarIdentifier)|\(eventIdentifier)",
             eventIdentifier: eventIdentifier,
@@ -231,9 +251,19 @@ final class SystemCalendarService: ObservableObject {
         )
     }
 
+    /// 仅“每年一次、interval 为 1、无结束日期”的规则才能映射为 TinyDesk 的每年重复。
     private func supportsImportantDateRecurrence(_ event: EKEvent) -> Bool {
         guard let rules = event.recurrenceRules, !rules.isEmpty else { return true }
-        return rules.allSatisfy { $0.frequency == .yearly }
+        return rules.allSatisfy {
+            $0.frequency == .yearly && $0.interval == 1 && $0.recurrenceEnd == nil
+        }
+    }
+
+    private func isSimpleYearlyRecurrence(_ event: EKEvent) -> Bool {
+        guard let rules = event.recurrenceRules, !rules.isEmpty else { return false }
+        return rules.allSatisfy {
+            $0.frequency == .yearly && $0.interval == 1 && $0.recurrenceEnd == nil
+        }
     }
 
     private func systemEvent(for link: SystemCalendarLink) -> EKEvent? {
@@ -251,11 +281,9 @@ final class SystemCalendarService: ObservableObject {
         updated.title = source.title
         updated.date = ImportantDateComponents(
             gregorianDate: source.startDate,
-            includeYear: source.recurrenceRules?.contains { $0.frequency == .yearly } != true
+            includeYear: !isSimpleYearlyRecurrence(source)
         )
-        updated.recurrence = source.recurrenceRules?.contains { $0.frequency == .yearly } == true
-            ? .yearly
-            : .once
+        updated.recurrence = isSimpleYearlyRecurrence(source) ? .yearly : .once
         if var link = updated.systemCalendarLink {
             link.eventIdentifier = source.eventIdentifier ?? link.eventIdentifier
             link.externalIdentifier = source.calendarItemExternalIdentifier?.isEmpty == false
@@ -287,12 +315,21 @@ final class SystemCalendarService: ObservableObject {
         event.notes = local.notes.isEmpty ? nil : local.notes
 
         let startDate: Date
+        let isGregorianYearly = local.recurrence == .yearly && local.date.calendarSystem == .gregorian
         if local.date.calendarSystem == .chineseLunar {
             guard let next = local.relevantOccurrence() else {
                 throw SystemCalendarServiceError.invalidLunarDate
             }
             startDate = next
             // EventKit 的 yearly recurrence 是公历规则；农历事件只维护下一次发生日。
+            event.recurrenceRules = nil
+        } else if isGregorianYearly && local.date.month == 2 && local.date.day == 29 {
+            // 闰日事件无法用普通年度规则表达（非闰年需按策略回退）。
+            // 导出为下一次发生日的一次性事件，由 TinyDesk 定期同步刷新。
+            guard let occurrence = local.relevantOccurrence() else {
+                throw SystemCalendarServiceError.invalidDate
+            }
+            startDate = occurrence
             event.recurrenceRules = nil
         } else {
             guard let occurrence = local.recurrence == .once
@@ -306,7 +343,9 @@ final class SystemCalendarService: ObservableObject {
         }
         event.startDate = startDate
         event.endDate = Calendar.current.date(byAdding: .day, value: 1, to: startDate) ?? startDate
-        try eventStore.save(event, span: local.recurrence == .yearly && local.date.calendarSystem == .gregorian ? .futureEvents : .thisEvent)
+        let usesFutureEventsSpan = isGregorianYearly
+            && !(local.date.month == 2 && local.date.day == 29)
+        try eventStore.save(event, span: usesFutureEventsSpan ? .futureEvents : .thisEvent)
 
         var updated = local
         updated.systemCalendarLink = SystemCalendarLink(

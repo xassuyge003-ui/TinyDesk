@@ -32,10 +32,10 @@ iCloud 或付费 Apple Developer Program。
 
 ## 当前状态
 
-- 当前版本：`2.5.0`
+- 当前版本：`2.6.0`
 - 最低系统：macOS 14
 - 发布阶段：可用的早期版本，数据格式带版本号并包含旧版迁移
-- 自动验证：76 项核心模型与持久化自检 + ZIP/RTFD 附件备份往返测试；GitHub Actions 在每个与应用版本一致的标签构建通用 DMG
+- 自动验证：100 项核心模型与持久化自检 + ZIP/RTFD 附件备份往返测试；GitHub Actions 在每个与应用版本一致的标签构建通用 DMG
 - 已覆盖的关键流程：直接编辑、窗口层级、尺寸预设、外观切换、锁定、待办筛选、重要日期双视图与农历换算
 
 内存和数据大小会随系统版本、卡片数量及富文本内容变化；工作区始终仅保存在本机沙盒中。
@@ -80,10 +80,11 @@ open TinyDesk.xcodeproj
 
 | 版本 | 适合用途 | 下载 |
 |---|---|---|
-| V2.5.0 | 最新版：桌面卡片 + 长文档资料库、全文搜索、导入导出和国风花笺 | [发布说明与 DMG](https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v2.5.0) |
-| V2.0.0 | 农历生日、系统日历、开机自启和快捷便签 | [发布说明](https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v2.0.0) · [直接下载 DMG](https://github.com/xassuyge003-ui/TinyDesk/releases/download/v2.0.0/TinyDesk-2.0.0.dmg) |
-| V1.1.1 | 富文本便签稳定版 | [发布说明](https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v1.1.1) · [直接下载 ZIP](https://github.com/xassuyge003-ui/TinyDesk/releases/download/v1.1.1/TinyDesk-v1.1.1-macOS-universal.zip) |
-| V1.0.0 | 首个公开基础版本 | [发布说明](https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v1.0.0) · [直接下载 ZIP](https://github.com/xassuyge003-ui/TinyDesk/releases/download/v1.0.0/TinyDesk-v1.0.0-macOS-universal.zip) |
+| V2.6.0 | 最新版：桌面卡片 + 资料库数据安全修复、农历边界修正、UI 完善 | [发布说明与 DMG](https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v2.6.0) |
+| V2.5.0 | 桌面卡片 + 长文档资料库、全文搜索、导入导出和国风花笺（旧版，仍可下载） | [发布说明](https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v2.5.0) |
+| V2.0.0 | 农历生日、系统日历、开机自启和快捷便签（旧版，仍可下载） | [发布说明](https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v2.0.0) · [直接下载 DMG](https://github.com/xassuyge003-ui/TinyDesk/releases/download/v2.0.0/TinyDesk-2.0.0.dmg) |
+| V1.1.1 | 富文本便签稳定版（旧版，仍可下载） | [发布说明](https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v1.1.1) · [直接下载 ZIP](https://github.com/xassuyge003-ui/TinyDesk/releases/download/v1.1.1/TinyDesk-v1.1.1-macOS-universal.zip) |
+| V1.0.0 | 首个公开基础版本（旧版，仍可下载） | [发布说明](https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v1.0.0) · [直接下载 ZIP](https://github.com/xassuyge003-ui/TinyDesk/releases/download/v1.0.0/TinyDesk-v1.0.0-macOS-universal.zip) |
 
 旧版 Release、安装包、源码快照和原发布说明均长期保留，不会被新版覆盖。跨版本降级前请先备份本地数据。
 

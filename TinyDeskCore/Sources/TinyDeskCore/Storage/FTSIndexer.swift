@@ -39,6 +39,7 @@ public final class FTSIndexer: @unchecked Sendable {
     }()
 
     private var db: OpaquePointer?
+    private var transactionDepth = 0
 
     /// 打开（或创建）位于 `url` 的数据库，并迁移到最新 schema。
     public init(url: URL) throws {
@@ -113,6 +114,8 @@ public final class FTSIndexer: @unchecked Sendable {
             deleted_at TEXT
         );
         """)
+        // 旧库补充 last_opened_at 列；已存在时忽略错误。
+        try? execute("ALTER TABLE documents ADD COLUMN last_opened_at TEXT;")
         try execute("""
         CREATE TABLE IF NOT EXISTS document_tags (
             document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
@@ -176,11 +179,12 @@ public final class FTSIndexer: @unchecked Sendable {
         guard let db else { throw LibraryStorageError.notOpen }
         guard !query.isEmpty else { return [] }
 
-        // 分词后构造 MATCH：每个词用双引号包裹以走短语匹配（空格分隔的连续词）。
+        // 分词后构造 MATCH：每个词用双引号包裹。纯标点输入会得到空词条，直接返回空结果。
         let terms = Self.segmentedForFTS(query)
             .split(separator: " ")
             .map { "\"\($0)\"" }
             .joined(separator: " ")
+        guard !terms.isEmpty else { return [] }
 
         let statement = try prepare(
             in: db,
@@ -210,6 +214,48 @@ public final class FTSIndexer: @unchecked Sendable {
         return ids
     }
 
+    /// 搜索并一次性关联文档 ID（JOIN documents），避免调用方逐条反查 rowid。
+    public func search(query: String, limit: Int = 200) throws -> [(rowid: Int64, documentID: UUID)] {
+        guard let db else { throw LibraryStorageError.notOpen }
+        guard !query.isEmpty else { return [] }
+
+        let terms = Self.segmentedForFTS(query)
+            .split(separator: " ")
+            .map { "\"\($0)\"" }
+            .joined(separator: " ")
+        guard !terms.isEmpty else { return [] }
+
+        let statement = try prepare(
+            in: db,
+            """
+            SELECT f.rowid, d.id
+            FROM (SELECT rowid FROM documents_fts WHERE documents_fts MATCH ? ORDER BY bm25(documents_fts) LIMIT ?) f
+            JOIN documents d ON d.rowid = f.rowid;
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        try bind(statement, index: 1, text: terms)
+        try bind(statement, index: 2, int: Int64(limit))
+
+        var results: [(rowid: Int64, documentID: UUID)] = []
+        while true {
+            let code = sqlite3_step(statement)
+            if code == SQLITE_ROW {
+                let rowid = sqlite3_column_int64(statement, 0)
+                if let raw = sqlite3_column_text(statement, 1),
+                   let uuid = UUID(uuidString: String(cString: raw)) {
+                    results.append((rowid, uuid))
+                }
+            } else if code == SQLITE_DONE {
+                break
+            } else {
+                throw LibraryStorageError.stepFailed(lastErrorMessage(db))
+            }
+        }
+        return results
+    }
+
     /// 取某文档在当前查询下命中的 snippet（带 <b> 高亮标记）。
     /// 优先取 body 列（索引 1）片段，body 无命中时回退到 title 列（索引 0）。
     public func snippet(
@@ -221,6 +267,7 @@ public final class FTSIndexer: @unchecked Sendable {
             .split(separator: " ")
             .map { "\"\($0)\"" }
             .joined(separator: " ")
+        guard !terms.isEmpty else { return nil }
 
         for column in [1, 0] {
             let statement = try prepare(
@@ -262,13 +309,28 @@ public final class FTSIndexer: @unchecked Sendable {
 
     public func insertDocument(_ document: LibraryDocument) throws {
         guard let db else { throw LibraryStorageError.notOpen }
+        // 使用 UPSERT 保留既有 rowid：REPLACE 会先删旧行再插新行，
+        // 改变 rowid 并级联清空 document_tags，还会让旧 rowid 的 FTS 行成为孤儿。
         let statement = try prepare(
             in: db,
             """
-            INSERT OR REPLACE INTO documents (
+            INSERT INTO documents (
                 id, title, category_id, is_favorited, paper_theme, font_preset,
-                word_count, summary, custom_cover_color_hex, created_at, updated_at, deleted_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                word_count, summary, custom_cover_color_hex, created_at, updated_at, deleted_at, last_opened_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                category_id = excluded.category_id,
+                is_favorited = excluded.is_favorited,
+                paper_theme = excluded.paper_theme,
+                font_preset = excluded.font_preset,
+                word_count = excluded.word_count,
+                summary = excluded.summary,
+                custom_cover_color_hex = excluded.custom_cover_color_hex,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at,
+                deleted_at = excluded.deleted_at,
+                last_opened_at = excluded.last_opened_at;
             """
         )
         defer { sqlite3_finalize(statement) }
@@ -285,13 +347,19 @@ public final class FTSIndexer: @unchecked Sendable {
         try bind(statement, index: 10, text: Self.dateFormatter.string(from: document.createdAt))
         try bind(statement, index: 11, text: Self.dateFormatter.string(from: document.updatedAt))
         try bind(statement, index: 12, optionalText: document.deletedAt.map(Self.dateFormatter.string(from:)))
+        try bind(statement, index: 13, optionalText: document.lastOpenedAt.map(Self.dateFormatter.string(from:)))
 
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw LibraryStorageError.stepFailed(lastErrorMessage(db))
         }
 
         // 写入 FTS 占位行（标题已分割），正文由 index() 覆盖。
-        let rowid = sqlite3_last_insert_rowid(db)
+        // 不能用 sqlite3_last_insert_rowid：UPSERT 冲突更新是 UPDATE，
+        // last_insert_rowid 不会刷新（会残留 document_tags 等表的旧值），
+        // 导致占位行写错 rowid、覆盖其他文档的 FTS 行。
+        guard let rowid = try fetchRowID(forDocumentID: document.id) else {
+            throw LibraryStorageError.stepFailed("documents 行写入后无法取得 rowid")
+        }
         let fts = try prepare(
             in: db,
             "INSERT OR REPLACE INTO documents_fts(rowid, title, body, tags, category) VALUES (?, ?, '', '', '');"
@@ -302,6 +370,84 @@ public final class FTSIndexer: @unchecked Sendable {
         guard sqlite3_step(fts) == SQLITE_DONE else {
             throw LibraryStorageError.stepFailed(lastErrorMessage(db))
         }
+    }
+
+    // MARK: - 事务
+
+    /// 在单个 SQLite 事务内执行一组写入，保证元数据、标签关系和 FTS 行的一致性。
+    /// 失败时回滚全部写入；支持嵌套调用。
+    public func withTransaction<T>(_ body: () throws -> T) throws -> T {
+        transactionDepth += 1
+        let isOuter = transactionDepth == 1
+        if isOuter {
+            do {
+                try execute("BEGIN IMMEDIATE;")
+            } catch {
+                transactionDepth -= 1
+                throw error
+            }
+        }
+        defer {
+            if isOuter {
+                transactionDepth = 0
+            }
+        }
+
+        do {
+            let value = try body()
+            if isOuter {
+                try execute("COMMIT;")
+            }
+            return value
+        } catch {
+            if isOuter {
+                do {
+                    try execute("ROLLBACK;")
+                } catch {
+                    // 回滚失败保留原错误
+                }
+            }
+            throw error
+        }
+    }
+
+    /// 删除 FTS 中已无 documents 行对应的孤儿词条，返回清理数量。
+    public func purgeOrphanedFTSRows() throws -> Int {
+        guard let db else { throw LibraryStorageError.notOpen }
+        let statement = try prepare(
+            in: db,
+            "DELETE FROM documents_fts WHERE rowid NOT IN (SELECT rowid FROM documents);"
+        )
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw LibraryStorageError.stepFailed(lastErrorMessage(db))
+        }
+        return Int(sqlite3_changes(db))
+    }
+
+    /// 返回缺少 FTS 索引行的文档 ID（例如历史版本 REPLACE 后遗留）。
+    public func documentsMissingFTSIndex() throws -> [UUID] {
+        guard let db else { throw LibraryStorageError.notOpen }
+        let statement = try prepare(
+            in: db,
+            "SELECT id FROM documents WHERE rowid NOT IN (SELECT rowid FROM documents_fts);"
+        )
+        defer { sqlite3_finalize(statement) }
+
+        var ids: [UUID] = []
+        while true {
+            let code = sqlite3_step(statement)
+            if code == SQLITE_ROW, let raw = sqlite3_column_text(statement, 0) {
+                if let uuid = UUID(uuidString: String(cString: raw)) {
+                    ids.append(uuid)
+                }
+            } else if code == SQLITE_DONE {
+                break
+            } else {
+                throw LibraryStorageError.stepFailed(lastErrorMessage(db))
+            }
+        }
+        return ids
     }
 
     public func replaceDocumentTags(documentID: UUID, tagIDs: [UUID]) throws {
@@ -383,7 +529,7 @@ public final class FTSIndexer: @unchecked Sendable {
             """
             SELECT d.id, d.title, d.category_id, d.is_favorited, d.paper_theme, d.font_preset,
                    d.word_count, d.summary, d.custom_cover_color_hex, d.created_at, d.updated_at, d.deleted_at,
-                   GROUP_CONCAT(dt.tag_id, ',') AS tag_ids
+                   GROUP_CONCAT(dt.tag_id, ',') AS tag_ids, d.last_opened_at
             FROM documents d
             LEFT JOIN document_tags dt ON dt.document_id = d.id
             GROUP BY d.id
@@ -396,7 +542,9 @@ public final class FTSIndexer: @unchecked Sendable {
         while true {
             let code = sqlite3_step(statement)
             if code == SQLITE_ROW {
-                results.append(readDocumentRow(statement))
+                if let document = readDocumentRow(statement) {
+                    results.append(document)
+                }
             } else if code == SQLITE_DONE {
                 break
             } else {
@@ -418,7 +566,9 @@ public final class FTSIndexer: @unchecked Sendable {
         while true {
             let code = sqlite3_step(statement)
             if code == SQLITE_ROW {
-                let id = UUID(uuidString: String(cString: sqlite3_column_text(statement, 0)))!
+                guard let rawID = sqlite3_column_text(statement, 0),
+                      let id = UUID(uuidString: String(cString: rawID))
+                else { continue }
                 let name = String(cString: sqlite3_column_text(statement, 1))
                 let sortOrder = Int(sqlite3_column_int64(statement, 2))
                 let iconName = sqlite3_column_text(statement, 3).map { String(cString: $0) }
@@ -453,7 +603,9 @@ public final class FTSIndexer: @unchecked Sendable {
         while true {
             let code = sqlite3_step(statement)
             if code == SQLITE_ROW {
-                let id = UUID(uuidString: String(cString: sqlite3_column_text(statement, 0)))!
+                guard let rawID = sqlite3_column_text(statement, 0),
+                      let id = UUID(uuidString: String(cString: rawID))
+                else { continue }
                 let name = String(cString: sqlite3_column_text(statement, 1))
                 let colorHex = String(cString: sqlite3_column_text(statement, 2))
                 let createdAt = Self.date(from: sqlite3_column_text(statement, 3).map { String(cString: $0) }) ?? Date()
@@ -515,7 +667,7 @@ public final class FTSIndexer: @unchecked Sendable {
 
     // MARK: - 内部工具
 
-    private func readDocumentRow(_ statement: OpaquePointer) -> LibraryDocument {
+    private func readDocumentRow(_ statement: OpaquePointer) -> LibraryDocument? {
         func text(_ index: Int32) -> String? {
             sqlite3_column_text(statement, index).map { String(cString: $0) }
         }
@@ -523,7 +675,7 @@ public final class FTSIndexer: @unchecked Sendable {
             sqlite3_column_int64(statement, index)
         }
 
-        let id = UUID(uuidString: text(0) ?? "") ?? UUID()
+        guard let rawID = text(0), let id = UUID(uuidString: rawID) else { return nil }
         let tagIDs = (text(12) ?? "")
             .split(separator: ",")
             .compactMap { UUID(uuidString: String($0)) }
@@ -540,7 +692,8 @@ public final class FTSIndexer: @unchecked Sendable {
             customCoverColorHex: text(8),
             createdAt: Self.date(from: text(9)) ?? Date(),
             updatedAt: Self.date(from: text(10)) ?? Date(),
-            deletedAt: text(11).flatMap { Self.date(from: $0) }
+            deletedAt: text(11).flatMap { Self.date(from: $0) },
+            lastOpenedAt: text(13).flatMap { Self.date(from: $0) }
         ).withTagIDs(tagIDs)
     }
 

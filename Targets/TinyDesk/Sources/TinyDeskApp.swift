@@ -2,8 +2,27 @@ import AppKit
 import SwiftUI
 import TinyDeskCore
 
+/// SwiftUI 生命周期与 AppKit 生命周期之间的桥，确保所有退出路径都最终落盘。
+enum AppLifecycleBridge {
+    static var onBecomeActive: (() -> Void)?
+    static var onTerminate: (() -> Void)?
+}
+
+/// 应用级委托：覆盖菜单退出、Dock 退出、系统终止等路径。
+final class TinyDeskAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidBecomeActive(_ notification: Notification) {
+        AppLifecycleBridge.onBecomeActive?()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        AppLifecycleBridge.onTerminate?()
+        return .terminateNow
+    }
+}
+
 @main
 struct TinyDeskApp: App {
+    @NSApplicationDelegateAdaptor(TinyDeskAppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var store: DesktopWorkspaceStore
     @StateObject private var windowManager: DesktopWindowManager
@@ -28,6 +47,25 @@ struct TinyDeskApp: App {
             )
         )
         _libraryStore = StateObject(wrappedValue: LibraryStore())
+
+        // 应用回到前台时重排通知（覆盖系统设置中重新授予权限、跨日期边界等场景）。
+        // SwiftUI 可能多次重建 App 结构体并重复执行 init：bridge 只接受第一次
+        // 初始化（StateObject 持有的实例），避免闭包捕获到被丢弃的实例。
+        if AppLifecycleBridge.onBecomeActive == nil {
+            AppLifecycleBridge.onBecomeActive = { [weak workspaceStore] in
+                workspaceStore?.refreshImportantDateNotifications()
+            }
+        }
+        if AppLifecycleBridge.onTerminate == nil {
+            AppLifecycleBridge.onTerminate = { [weak windowManager] in
+                windowManager?.closePanels()
+            }
+        }
+        // 注意：不要在 init 中调用 windowManager.start()。
+        // SwiftUI 会多次重建 App 结构体并重新执行 init，每次都会新建一个
+        // DesktopWindowManager 并为其创建整套桌面面板，被丢弃实例的面板
+        // 会泄漏并叠加成重复卡片。start() 由控制中心/菜单栏视图的 onAppear
+        // 在真正的实例上触发（didStart 保证只执行一次）。
     }
 
     var body: some Scene {
@@ -137,6 +175,8 @@ struct TinyDeskApp: App {
         guard let document = libraryStore.selectedDocumentID
             .flatMap({ libraryStore.document(withID: $0) })
         else { return }
+        // 导出前先同步保存编辑器未落盘正文。
+        LibraryExportWillBeginNotification.post()
         let panel = NSSavePanel()
         panel.title = "导出文档"
         panel.allowedContentTypes = LibraryImportExport.supportedExportContentTypes
@@ -152,6 +192,8 @@ struct TinyDeskApp: App {
     }
 
     private func openBackupPanel() {
+        // 备份前先同步保存所有未落盘正文。
+        LibraryExportWillBeginNotification.post()
         let panel = NSSavePanel()
         panel.title = "导出资料库备份"
         panel.allowedContentTypes = [.zip]
@@ -205,6 +247,14 @@ private struct TinyDeskMenuBarView: View {
             openWindow(id: "library")
             NSApplication.shared.activate(ignoringOtherApps: true)
         }
+        .onReceive(NotificationCenter.default.publisher(for: LibraryDocumentOpenRequest.notificationName)) { notification in
+            // 菜单栏视图常驻：资料库窗口关闭时也能先打开窗口，再由
+            // LibraryWindowView.onAppear 消费 pending 文档 ID 完成选中。
+            guard let id = notification.userInfo?[LibraryDocumentOpenRequest.documentIDKey] as? UUID else { return }
+            LibraryOpenCoordinator.pendingDocumentID = id
+            openWindow(id: "library")
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        }
 
         Divider()
 
@@ -241,7 +291,7 @@ private struct TinyDeskMenuBarView: View {
 
         Divider()
 
-        Button("打开控制中心设置", systemImage: "gearshape") {
+        Button("打开控制中心", systemImage: "gearshape") {
             openControlCenter()
         }
 

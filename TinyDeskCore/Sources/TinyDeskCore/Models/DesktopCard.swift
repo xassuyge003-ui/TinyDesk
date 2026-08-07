@@ -1,5 +1,12 @@
 import Foundation
 
+/// 内部日期计算固定使用公历标识，仅沿用用户时区，避免佛历/和历等纪年错位。
+fileprivate func gregorianCalendar(timeZone: TimeZone) -> Calendar {
+    var value = Calendar(identifier: .gregorian)
+    value.timeZone = timeZone
+    return value
+}
+
 public enum DesktopCardKind: String, Codable, Sendable, CaseIterable {
     case sticky
     case countdown
@@ -113,7 +120,9 @@ public struct ImportantDateComponents: Codable, Sendable, Equatable {
     }
 
     public init(gregorianDate date: Date, calendar: Calendar = .current, includeYear: Bool = true) {
-        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        // 字段语义为公历绝对年；仅沿用传入日历的时区，避免佛历/和历等纪年错位。
+        let gregorian = gregorianCalendar(timeZone: calendar.timeZone)
+        let components = gregorian.dateComponents([.year, .month, .day], from: date)
         self.init(
             calendarSystem: .gregorian,
             year: includeYear ? components.year : nil,
@@ -126,21 +135,22 @@ public struct ImportantDateComponents: Codable, Sendable, Equatable {
         from referenceDate: Date = Date(),
         calendar: Calendar = .current
     ) -> Date? {
-        let referenceYear = calendar.component(.year, from: referenceDate)
+        let gregorian = gregorianCalendar(timeZone: calendar.timeZone)
+        let referenceYear = gregorian.component(.year, from: referenceDate)
         switch calendarSystem {
         case .gregorian:
             let candidateYears = year.map { [$0] } ?? Array(referenceYear...(referenceYear + 8))
             for candidateYear in candidateYears {
                 var components = DateComponents()
-                components.calendar = calendar
-                components.timeZone = calendar.timeZone
+                components.calendar = gregorian
+                components.timeZone = gregorian.timeZone
                 components.year = candidateYear
                 components.month = month
                 components.day = day
-                guard let value = calendar.date(from: components) else { continue }
-                let resolved = calendar.dateComponents([.year, .month, .day], from: value)
+                guard let value = gregorian.date(from: components) else { continue }
+                let resolved = gregorian.dateComponents([.year, .month, .day], from: value)
                 if resolved.year == candidateYear, resolved.month == month, resolved.day == day {
-                    return calendar.startOfDay(for: value)
+                    return gregorian.startOfDay(for: value)
                 }
             }
         case .chineseLunar:
@@ -238,24 +248,25 @@ public struct ImportantDateEvent: Identifiable, Codable, Sendable, Equatable {
             )
         }
 
+        let gregorian = gregorianCalendar(timeZone: calendar.timeZone)
         var components = DateComponents()
-        components.calendar = calendar
-        components.timeZone = calendar.timeZone
+        components.calendar = gregorian
+        components.timeZone = gregorian.timeZone
         components.year = year
         components.month = date.month
         components.day = date.day
 
-        if let value = calendar.date(from: components) {
-            let resolved = calendar.dateComponents([.year, .month, .day], from: value)
+        if let value = gregorian.date(from: components) {
+            let resolved = gregorian.dateComponents([.year, .month, .day], from: value)
             if resolved.year == year, resolved.month == date.month, resolved.day == date.day {
-                return calendar.startOfDay(for: value)
+                return gregorian.startOfDay(for: value)
             }
         }
 
         guard date.month == 2, date.day == 29 else { return nil }
         components.month = leapDayPolicy == .february28 ? 2 : 3
         components.day = leapDayPolicy == .february28 ? 28 : 1
-        return calendar.date(from: components).map(calendar.startOfDay(for:))
+        return gregorian.date(from: components).map(gregorian.startOfDay(for:))
     }
 
     public func storedOccurrence(calendar: Calendar = .current) -> Date? {
@@ -278,13 +289,22 @@ public struct ImportantDateEvent: Identifiable, Codable, Sendable, Equatable {
             return storedOccurrence(calendar: calendar)
         }
 
-        let today = calendar.startOfDay(for: referenceDate)
-        let currentYear = calendar.component(.year, from: today)
+        let gregorian = gregorianCalendar(timeZone: calendar.timeZone)
+        let today = gregorian.startOfDay(for: referenceDate)
+        let currentYear = gregorian.component(.year, from: today)
         let earliestYear = max(currentYear, startYear ?? currentYear)
-        if let current = occurrence(inYear: earliestYear, calendar: calendar), current >= today {
-            return current
+
+        // 农历闰月并非每年存在（间隔可达 3~19 年），必须覆盖完整农历周期。
+        // 上限 20 年足以覆盖 19 年农历章法周期，避免极端数据造成无限循环。
+        let maxSearchYears = 20
+        for offset in 0..<maxSearchYears {
+            let year = earliestYear + offset
+            if let occurrence = occurrence(inYear: year, calendar: calendar),
+               occurrence >= today {
+                return occurrence
+            }
         }
-        return occurrence(inYear: earliestYear + 1, calendar: calendar)
+        return nil
     }
 
     public func daysUntilOccurrence(from referenceDate: Date = Date(), calendar: Calendar = .current) -> Int? {
@@ -294,19 +314,34 @@ public struct ImportantDateEvent: Identifiable, Codable, Sendable, Equatable {
     }
 
     public func occurs(on day: Date, calendar: Calendar = .current) -> Bool {
-        let components = calendar.dateComponents([.year, .month, .day], from: day)
+        let gregorian = gregorianCalendar(timeZone: calendar.timeZone)
+        let components = gregorian.dateComponents([.year, .month, .day], from: day)
         if recurrence == .yearly {
             guard let year = components.year else { return false }
+            if date.calendarSystem == .chineseLunar {
+                // 冬月/腊月可能跨公历年，同一年内可能有两个发生日（年初与年末），
+                // 全部候选日都属于该农历事件。
+                let candidates = ChineseLunarCalendar.occurrences(
+                    inGregorianYear: year,
+                    month: date.month,
+                    day: date.day,
+                    isLeapMonth: date.isLeapMonth,
+                    leapMonthPolicy: resolvedLunarLeapMonthPolicy,
+                    calendar: calendar
+                )
+                return candidates.contains { gregorian.isDate($0, inSameDayAs: day) }
+            }
             guard let occurrence = occurrence(inYear: year, calendar: calendar) else { return false }
-            return calendar.isDate(occurrence, inSameDayAs: day)
+            return gregorian.isDate(occurrence, inSameDayAs: day)
         }
         guard let occurrence = storedOccurrence(calendar: calendar) else { return false }
-        return calendar.isDate(occurrence, inSameDayAs: day)
+        return gregorian.isDate(occurrence, inSameDayAs: day)
     }
 
     public func anniversaryNumber(for occurrence: Date, calendar: Calendar = .current) -> Int? {
         guard let startYear else { return nil }
-        let year = calendar.component(.year, from: occurrence)
+        let gregorian = gregorianCalendar(timeZone: calendar.timeZone)
+        let year = gregorian.component(.year, from: occurrence)
         let value = year - startYear
         return value > 0 ? value : nil
     }
@@ -390,6 +425,14 @@ public struct DesktopCardFrame: Codable, Sendable, Equatable {
     }
 }
 
+/// 资料库桌面摘要卡关联文档的生命周期状态。
+public enum DesktopReferenceStatus: String, Codable, Sendable, Equatable {
+    /// 文档已移入回收站。
+    case trashed
+    /// 文档已永久删除或正文丢失。
+    case missing
+}
+
 public struct DesktopCard: Identifiable, Codable, Sendable, Equatable {
     public let id: UUID
     public var kind: DesktopCardKind
@@ -415,6 +458,8 @@ public struct DesktopCard: Identifiable, Codable, Sendable, Equatable {
     public var referenceDocumentSummary: String?
     /// 标签名缓存，用于摘要卡片展示。
     public var referenceDocumentTags: [String]?
+    /// 关联文档的生命周期状态；`nil` 表示文档正常。缺失时兼容旧版工作区。
+    public var referenceDocumentStatus: DesktopReferenceStatus?
     public var isVisible: Bool
     public var frame: DesktopCardFrame?
     public let createdAt: Date
@@ -439,6 +484,7 @@ public struct DesktopCard: Identifiable, Codable, Sendable, Equatable {
         referenceDocumentTitle: String? = nil,
         referenceDocumentSummary: String? = nil,
         referenceDocumentTags: [String]? = nil,
+        referenceDocumentStatus: DesktopReferenceStatus? = nil,
         isVisible: Bool = true,
         frame: DesktopCardFrame? = nil,
         createdAt: Date = Date(),
@@ -462,6 +508,7 @@ public struct DesktopCard: Identifiable, Codable, Sendable, Equatable {
         self.referenceDocumentTitle = referenceDocumentTitle
         self.referenceDocumentSummary = referenceDocumentSummary
         self.referenceDocumentTags = referenceDocumentTags
+        self.referenceDocumentStatus = referenceDocumentStatus
         self.isVisible = isVisible
         self.frame = frame
         self.createdAt = createdAt
@@ -472,7 +519,7 @@ public struct DesktopCard: Identifiable, Codable, Sendable, Equatable {
         DesktopCard(
             kind: .sticky,
             title: "便签",
-            noteText: "点击这里开始记录…",
+            noteText: "",
             targetDate: now,
             theme: .sand,
             createdAt: now,
@@ -498,13 +545,7 @@ public struct DesktopCard: Identifiable, Codable, Sendable, Equatable {
             kind: .todo,
             title: "今日待办",
             targetDate: now,
-            todoItems: [
-                TinyDeskTodoItem(
-                    title: "点击添加新的待办",
-                    dueDate: calendar.startOfDay(for: now),
-                    createdAt: now
-                ),
-            ],
+            todoItems: [],
             theme: .mint,
             createdAt: now,
             updatedAt: now

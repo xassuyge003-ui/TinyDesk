@@ -32,7 +32,7 @@ and position are saved automatically in the app sandbox.
 
 ## Project status
 
-- Current version: `2.5.0` (build 25)
+- Current version: `2.6.0` (build 26)
 - Minimum system: macOS 14
 - Stage: usable early release with a versioned workspace format and legacy migration
 - Automated checks: 76 core model/persistence checks plus ZIP/RTFD backup round-trip coverage; GitHub Actions builds a universal DMG for every release tag
@@ -80,7 +80,8 @@ Every tag matching the `Info.plist` version publishes a universal `TinyDesk-x.y.
 
 | Version | Highlights | Download |
 |---|---|---|
-| V2.5.0 | Latest: desktop cards plus the document library, full-text search, import/export, and Chinese paper themes | [Release notes and DMG](https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v2.5.0) |
+| V2.6.0 | Latest: desktop cards with data-safety fixes, lunar-calendar boundary corrections, and UI polish | [Release notes and DMG](https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v2.6.0) |
+| V2.5.0 | Desktop cards plus the document library, full-text search, import/export, and Chinese paper themes (older, still available) | [Release notes](https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v2.5.0) |
 | V2.0.0 | Lunar birthdays, system Calendar integration, launch at login, and quick notes | [Release](https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v2.0.0) · [DMG](https://github.com/xassuyge003-ui/TinyDesk/releases/download/v2.0.0/TinyDesk-2.0.0.dmg) |
 | V1.1.1 | Stable rich-text note release | [Release](https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v1.1.1) · [ZIP](https://github.com/xassuyge003-ui/TinyDesk/releases/download/v1.1.1/TinyDesk-v1.1.1-macOS-universal.zip) |
 | V1.0.0 | First public baseline | [Release](https://github.com/xassuyge003-ui/TinyDesk/releases/tag/v1.0.0) · [ZIP](https://github.com/xassuyge003-ui/TinyDesk/releases/download/v1.0.0/TinyDesk-v1.0.0-macOS-universal.zip) |

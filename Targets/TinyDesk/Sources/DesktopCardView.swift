@@ -14,10 +14,11 @@ struct DesktopCardHostView: View {
             if let card = store.card(withID: cardID) {
                 GeometryReader { proxy in
                     let compact = proxy.size.width < 270 || proxy.size.height < 220
+                    let veryCompact = proxy.size.width < 300
 
                     VStack(spacing: 0) {
                         if card.kind != .countdown {
-                            cardHeader(card: card, compact: compact)
+                            cardHeader(card: card, compact: compact, veryCompact: veryCompact)
                         }
                         cardContent(card: card, size: proxy.size)
                     }
@@ -36,6 +37,7 @@ struct DesktopCardHostView: View {
                     .animation(.easeOut(duration: 0.18), value: isHovering)
                 }
                 .onHover { isHovering = $0 }
+                .allowsHitTesting(!store.isReadOnly)
                 .contextMenu {
                     Button("在桌面隐藏", systemImage: "eye.slash") {
                         windowManager.hide(cardID)
@@ -47,6 +49,15 @@ struct DesktopCardHostView: View {
                         ) {
                             toggleAlwaysOnTop(for: card)
                         }
+                    }
+                    if card.kind == .deskRef {
+                        Button("打开资料", systemImage: "book") {
+                            openDeskRefDocument(card)
+                        }
+                        Button("从桌面移除", systemImage: "minus.circle", role: .destructive) {
+                            store.deleteCard(card.id)
+                        }
+                        Divider()
                     }
                     Button("恢复默认位置", systemImage: "arrow.counterclockwise") {
                         windowManager.resetPosition(cardID)
@@ -75,6 +86,11 @@ struct DesktopCardHostView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private func openDeskRefDocument(_ card: DesktopCard) {
+        guard let documentID = card.referenceDocumentID else { return }
+        windowManager.openLibraryDocument(documentID)
+    }
+
     @ViewBuilder
     private func cardContent(card: DesktopCard, size: CGSize) -> some View {
         let contentSize = card.kind == .countdown
@@ -92,7 +108,7 @@ struct DesktopCardHostView: View {
         }
     }
 
-    private func cardHeader(card: DesktopCard, compact: Bool) -> some View {
+    private func cardHeader(card: DesktopCard, compact: Bool, veryCompact: Bool) -> some View {
         HStack(spacing: compact ? 7 : 10) {
             if card.resolvedIsPositionLocked {
                 Button {
@@ -125,77 +141,109 @@ struct DesktopCardHostView: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: compact ? 13 : 15, weight: .semibold, design: .rounded))
                 .lineLimit(1)
+                .disabled(store.isReadOnly)
 
             Spacer(minLength: 0)
 
-            if card.kind == .sticky {
-                Button {
-                    toggleAlwaysOnTop(for: card)
+            if veryCompact {
+                Menu {
+                    if card.kind == .sticky {
+                        Button(
+                            card.resolvedIsAlwaysOnTop ? "取消置顶" : "置顶显示",
+                            systemImage: card.resolvedIsAlwaysOnTop ? "pin.slash" : "pin"
+                        ) {
+                            toggleAlwaysOnTop(for: card)
+                        }
+                        Divider()
+                    }
+                    sizePresetButtons(for: card)
+                    surfaceStyleButtons(for: card)
+                    themeButtons(for: card)
+                    Divider()
+                    Button("隐藏卡片", systemImage: "eye.slash") {
+                        windowManager.hide(cardID)
+                    }
                 } label: {
-                    Image(systemName: card.resolvedIsAlwaysOnTop ? "pin.fill" : "pin")
+                    Image(systemName: "ellipsis")
                         .font(.system(size: 12, weight: .semibold))
                         .frame(width: 24, height: 24)
                         .contentShape(Rectangle())
                 }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .foregroundStyle(.secondary)
+                .help("卡片设置")
+            } else {
+                if card.kind == .sticky {
+                    Button {
+                        toggleAlwaysOnTop(for: card)
+                    } label: {
+                        Image(systemName: card.resolvedIsAlwaysOnTop ? "pin.fill" : "pin")
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(card.resolvedIsAlwaysOnTop ? card.theme.palette.accent : .secondary)
+                    .help(card.resolvedIsAlwaysOnTop ? "取消置顶：回到桌面层" : "置顶：显示在普通应用上方")
+                }
+
+                Menu {
+                    sizePresetButtons(for: card)
+                } label: {
+                    Image(systemName: "aspectratio")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .foregroundStyle(.secondary)
+                .help("选择卡片尺寸")
+
+                Menu {
+                    surfaceStyleButtons(for: card)
+                } label: {
+                    Image(systemName: card.resolvedSurfaceStyle.symbolName)
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .foregroundStyle(.secondary)
+                .help("选择背景风格")
+
+                Menu {
+                    themeButtons(for: card)
+                } label: {
+                    Circle()
+                        .fill(card.theme.palette.accent)
+                        .frame(width: 12, height: 12)
+                        .overlay(Circle().stroke(.white.opacity(0.45), lineWidth: 1))
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("更换颜色")
+
+                Button {
+                    windowManager.hide(cardID)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
                 .buttonStyle(.plain)
-                .foregroundStyle(card.resolvedIsAlwaysOnTop ? card.theme.palette.accent : .secondary)
-                .help(card.resolvedIsAlwaysOnTop ? "取消置顶：回到桌面层" : "置顶：显示在普通应用上方")
+                .foregroundStyle(.secondary)
+                .help("隐藏卡片（可在菜单栏重新显示）")
             }
-
-            Menu {
-                sizePresetButtons(for: card)
-            } label: {
-                Image(systemName: "aspectratio")
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .foregroundStyle(.secondary)
-            .help("选择卡片尺寸")
-
-            Menu {
-                surfaceStyleButtons(for: card)
-            } label: {
-                Image(systemName: card.resolvedSurfaceStyle.symbolName)
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .foregroundStyle(.secondary)
-            .help("选择背景风格")
-
-            Menu {
-                themeButtons(for: card)
-            } label: {
-                Circle()
-                    .fill(card.theme.palette.accent)
-                    .frame(width: 12, height: 12)
-                    .overlay(Circle().stroke(.white.opacity(0.45), lineWidth: 1))
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("更换颜色")
-
-            Button {
-                windowManager.hide(cardID)
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 10, weight: .bold))
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("隐藏卡片（可在菜单栏重新显示）")
         }
         .padding(.leading, compact ? 10 : 14)
         .padding(.trailing, compact ? 8 : 10)
@@ -210,6 +258,7 @@ struct DesktopCardHostView: View {
         Binding(
             get: { store.card(withID: cardID)?[keyPath: keyPath] ?? fallback },
             set: { value in
+                guard !store.isReadOnly else { return }
                 store.updateCard(cardID) { $0[keyPath: keyPath] = value }
             }
         )
@@ -235,7 +284,7 @@ struct DesktopCardHostView: View {
                 windowManager.applySizePreset(preset, to: card.id)
             } label: {
                 Label(
-                    "\(preset.displayName)  \(preset.dimensions)",
+                    "\(preset.displayName)  \(preset.dimensions(for: card.kind))",
                     systemImage: selected == preset ? "checkmark" : preset.symbolName
                 )
             }
@@ -514,7 +563,8 @@ private struct CountdownCardContent: View {
                             compact: compact,
                             accent: card.theme.palette.accent,
                             referenceDate: context.date,
-                            edit: edit
+                            edit: edit,
+                            add: { editorContext = ImportantDateEditorContext(event: nil) }
                         )
                     case .list:
                         ImportantDateListView(
@@ -538,11 +588,15 @@ private struct CountdownCardContent: View {
                 onDelete: { event in store.deleteImportantDate(event.id) },
                 onUnlink: { event in store.removeSystemCalendarLink(event.id, using: calendarService) }
             )
+            .onAppear { windowManager.temporarilyRaiseCard(card.id) }
+            .onDisappear { windowManager.restoreCardLevel(card.id) }
         }
         .sheet(isPresented: $showsCalendarSync) {
             SystemCalendarSyncView()
                 .environmentObject(store)
                 .environmentObject(calendarService)
+                .onAppear { windowManager.temporarilyRaiseCard(card.id) }
+                .onDisappear { windowManager.restoreCardLevel(card.id) }
         }
     }
 
@@ -552,6 +606,15 @@ private struct CountdownCardContent: View {
         let controlSize: CGFloat = compact ? 20 : 24
 
         return HStack(spacing: 4) {
+            if !ultraCompact {
+                TextField("卡片标题", text: cardTitleBinding)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: compact ? 12 : 13, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+                    .frame(maxWidth: 88)
+                    .disabled(store.isReadOnly)
+                    .help("卡片名称")
+            }
             Picker("视图", selection: viewModeBinding) {
                 Text("日历").tag(ImportantDateViewMode.calendar)
                 Text("列表").tag(ImportantDateViewMode.list)
@@ -659,7 +722,7 @@ private struct CountdownCardContent: View {
                         windowManager.applySizePreset(preset, to: card.id)
                     } label: {
                         Label(
-                            "\(preset.displayName)  \(preset.dimensions)",
+                            "\(preset.displayName)  \(preset.dimensions(for: card.kind))",
                             systemImage: selected == preset ? "checkmark" : preset.symbolName
                         )
                     }
@@ -721,6 +784,16 @@ private struct CountdownCardContent: View {
         Binding(
             get: { store.card(withID: card.id)?.resolvedImportantDateViewMode ?? .calendar },
             set: { mode in store.updateCard(card.id) { $0.importantDateViewMode = mode } }
+        )
+    }
+
+    private var cardTitleBinding: Binding<String> {
+        Binding(
+            get: { store.card(withID: card.id)?.title ?? card.title },
+            set: { value in
+                guard !store.isReadOnly else { return }
+                store.updateCard(card.id) { $0.title = value }
+            }
         )
     }
 
@@ -909,6 +982,9 @@ private struct ImportantDateCalendarView: View {
     let accent: Color
     let referenceDate: Date
     let edit: (ImportantDateEvent) -> Void
+    let add: () -> Void
+
+    @State private var popoverDay: Date?
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 1), count: 7)
 
@@ -947,6 +1023,9 @@ private struct ImportantDateCalendarView: View {
                 }
             }
             .padding(.horizontal, 10)
+            .popover(isPresented: popoverBinding, arrowEdge: .bottom) {
+                dayPopoverContent
+            }
 
             if !compact {
                 let selectedEvents = events.filter { $0.occurs(on: selectedDay) }
@@ -979,6 +1058,54 @@ private struct ImportantDateCalendarView: View {
         }
     }
 
+    /// 紧凑模式点击有事件的日期时弹出事件列表；无事件时提供添加入口。
+    @ViewBuilder
+    private var dayPopoverContent: some View {
+        if let day = popoverDay {
+            let dayEvents = events.filter { $0.occurs(on: day) }
+            VStack(alignment: .leading, spacing: 8) {
+                Text(day.formatted(.dateTime.year().month().day()))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                if dayEvents.isEmpty {
+                    Text("这一天没有重要日期")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(dayEvents) { event in
+                        Button {
+                            popoverDay = nil
+                            edit(event)
+                        } label: {
+                            Label(event.title, systemImage: event.category.symbolName)
+                                .font(.callout)
+                                .foregroundStyle(event.category.color)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                Divider()
+                Button {
+                    popoverDay = nil
+                    add()
+                } label: {
+                    Label("添加重要日期", systemImage: "plus.circle.fill")
+                        .font(.callout)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(12)
+            .frame(minWidth: 220)
+        }
+    }
+
+    private var popoverBinding: Binding<Bool> {
+        Binding(
+            get: { popoverDay != nil },
+            set: { if !$0 { popoverDay = nil } }
+        )
+    }
+
     private func dayCell(_ day: Date) -> some View {
         let dayEvents = events.filter { $0.occurs(on: day) }
         let selected = Calendar.current.isDate(day, inSameDayAs: selectedDay)
@@ -986,6 +1113,9 @@ private struct ImportantDateCalendarView: View {
 
         return Button {
             selectedDay = day
+            if compact && !dayEvents.isEmpty {
+                popoverDay = day
+            }
         } label: {
             VStack(spacing: compact ? 0 : 2) {
                 Text("\(Calendar.current.component(.day, from: day))")
@@ -994,6 +1124,11 @@ private struct ImportantDateCalendarView: View {
                 HStack(spacing: 1) {
                     ForEach(Array(dayEvents.prefix(3)), id: \.id) { event in
                         Circle().fill(event.category.color).frame(width: compact ? 2 : 4, height: compact ? 2 : 4)
+                    }
+                    if dayEvents.count > 3 {
+                        Text("+\(dayEvents.count - 3)")
+                            .font(.system(size: compact ? 6 : 8, weight: .bold))
+                            .foregroundStyle(.tertiary)
                     }
                 }
                 .frame(height: compact ? 2 : 4)
@@ -1445,6 +1580,11 @@ private struct SystemCalendarSyncView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    if let note = calendarService.lastImportNote {
+                        Text(note)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Text("只导入一次性和每年重复的事件；周、月等规则不会被错误降为一次性重要日期。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -1503,8 +1643,14 @@ private struct SystemCalendarSyncView: View {
                                     .foregroundStyle(.secondary)
                             } else {
                                 Button("添加") {
-                                    store.exportImportantDate(event.id, to: exportCalendarID, using: calendarService)
-                                    statusMessage = "已尝试将“\(event.title)”添加到系统日历。"
+                                    let succeeded = store.exportImportantDate(
+                                        event.id,
+                                        to: exportCalendarID,
+                                        using: calendarService
+                                    )
+                                    statusMessage = succeeded
+                                        ? "已添加“\(event.title)”到系统日历。"
+                                        : "添加失败：\(calendarService.lastError ?? "请检查日历权限或可写性。")"
                                 }
                                 .disabled(exportCalendarID.isEmpty)
                             }
@@ -1796,6 +1942,7 @@ private enum TodoFilter: String, CaseIterable, Identifiable {
 private struct TodoItemRow: View {
     @EnvironmentObject private var store: DesktopWorkspaceStore
     @State private var isHovering = false
+    @State private var showsDatePicker = false
 
     let cardID: UUID
     let item: TinyDeskTodoItem
@@ -1827,21 +1974,31 @@ private struct TodoItemRow: View {
                 }
             }
 
-            if !compact {
-                Menu {
-                    priorityMenu
-                    Divider()
-                    dueDateButtons
-                } label: {
-                    Circle()
-                        .fill(item.priority.color)
-                        .frame(width: 8, height: 8)
-                        .frame(width: 20, height: 20)
+            Menu {
+                priorityMenu
+                Divider()
+                dueDateButtons
+                Button("选择日期…") {
+                    showsDatePicker = true
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("优先级与计划日期")
+            } label: {
+                Circle()
+                    .fill(item.priority.color)
+                    .frame(width: compact ? 6 : 8, height: compact ? 6 : 8)
+                    .frame(width: compact ? 18 : 20, height: compact ? 18 : 20)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("优先级与计划日期")
+            .popover(isPresented: $showsDatePicker, arrowEdge: .bottom) {
+                DatePicker(
+                    "计划日期",
+                    selection: dueDateBinding,
+                    displayedComponents: .date
+                )
+                .datePickerStyle(.graphical)
+                .padding(12)
             }
 
             Button(action: deleteItem) {
@@ -1868,6 +2025,16 @@ private struct TodoItemRow: View {
             Button(item.isCompleted ? "标记为未完成" : "标记为完成", action: toggleCompleted)
             Button("删除", role: .destructive, action: deleteItem)
         }
+    }
+
+    private var dueDateBinding: Binding<Date> {
+        Binding(
+            get: { item.dueDate ?? Date() },
+            set: { date in
+                updateItem { $0.dueDate = Calendar.current.startOfDay(for: date) }
+                showsDatePicker = false
+            }
+        )
     }
 
     private var timingText: String? {
@@ -1942,56 +2109,98 @@ private struct TodoItemRow: View {
 }
 
 private struct DeskRefCardContent: View {
+    @EnvironmentObject private var store: DesktopWorkspaceStore
     @EnvironmentObject private var windowManager: DesktopWindowManager
     let card: DesktopCard
     let availableSize: CGSize
 
+    private var isCompact: Bool {
+        availableSize.width < 300 || availableSize.height < 220
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: isCompact ? 6 : 8) {
             HStack(spacing: 8) {
                 Image(systemName: "books.vertical")
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: isCompact ? 12 : 14, weight: .semibold))
                     .foregroundStyle(card.theme.palette.accent)
                 Text(card.referenceDocumentTitle ?? card.title)
-                    .font(.system(size: 15, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
+                    .font(.system(size: isCompact ? 13 : 15, weight: .semibold, design: .rounded))
+                    .lineLimit(isCompact ? 1 : 2)
                 Spacer(minLength: 0)
             }
 
-            Text(summaryText)
-                .font(.system(size: 13, design: .rounded))
+            if let status = card.referenceDocumentStatus {
+                statusView(status)
+            } else {
+                Text(summaryText)
+                    .font(.system(size: isCompact ? 11 : 13, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(isCompact ? 2 : 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Spacer(minLength: 0)
+
+                if let tags = card.referenceDocumentTags, !tags.isEmpty {
+                    HStack(spacing: 4) {
+                        ForEach(tags.prefix(isCompact ? 2 : 3), id: \.self) { tag in
+                            Text(tag)
+                                .font(.system(size: 9, weight: .medium, design: .rounded))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(card.theme.palette.accent.opacity(0.12), in: Capsule())
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                }
+
+                Button(action: openDocument) {
+                    Label("打开资料", systemImage: "book")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .padding(.horizontal, 10)
+                        .frame(height: 26)
+                        .background(card.theme.palette.accent.opacity(0.16), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(card.theme.palette.accent)
+            }
+        }
+        .padding(isCompact ? 10 : 12)
+        // 书签语义：单击整卡打开关联文档；标题输入框仍可独立编辑。
+        .onTapGesture {
+            openDocument()
+        }
+    }
+
+    @ViewBuilder
+    private func statusView(_ status: DesktopReferenceStatus) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(
+                status == .missing ? "找不到关联文档" : "文档在回收站",
+                systemImage: status == .missing ? "questionmark.circle" : "trash"
+            )
+            .font(.system(size: 12, weight: .semibold, design: .rounded))
+            .foregroundStyle(status == .missing ? .red : .secondary)
+
+            Text(status == .missing
+                ? "资料库中的原文已被删除，此卡片无法再打开。"
+                : "资料库中的原文已移入回收站，恢复后此卡片可继续使用。")
+                .font(.system(size: 11, design: .rounded))
                 .foregroundStyle(.secondary)
-                .lineLimit(4)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(3)
 
             Spacer(minLength: 0)
 
-            if let tags = card.referenceDocumentTags, !tags.isEmpty {
-                HStack(spacing: 4) {
-                    ForEach(tags.prefix(3), id: \.self) { tag in
-                        Text(tag)
-                            .font(.system(size: 9, weight: .medium, design: .rounded))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(card.theme.palette.accent.opacity(0.12), in: Capsule())
-                            .lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
-                }
+            Button("从桌面移除", systemImage: "minus.circle") {
+                store.deleteCard(card.id)
             }
-        }
-        .padding(12)
-        .onTapGesture(count: 2) {
-            openDocument()
-        }
-        .onTapGesture {
-            // 单击提示双击打开。
-        }
-        .overlay(alignment: .bottomTrailing) {
-            Text("双击打开")
-                .font(.system(size: 9, weight: .medium, design: .rounded))
-                .foregroundStyle(.tertiary)
-                .padding(8)
+            .font(.system(size: 11, weight: .medium, design: .rounded))
+            .padding(.horizontal, 10)
+            .frame(height: 26)
+            .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .buttonStyle(.plain)
+            .foregroundStyle(.red)
         }
     }
 
@@ -2025,7 +2234,9 @@ private struct CardSurface: View {
             }
         case .transparent:
             ZStack {
+                // 保留壁纸透出，同时提供低透明度内容底，避免文字直接叠在壁纸上。
                 Color.clear
+                Rectangle().fill(.black.opacity(0.05))
                 LinearGradient(
                     colors: [theme.palette.accent.opacity(0.10), .clear],
                     startPoint: .topLeading,

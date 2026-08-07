@@ -10,6 +10,8 @@ struct LibrarySidebarView: View {
     @State private var newCategoryName = ""
     @State private var showsAddTag = false
     @State private var newTagName = ""
+    @State private var pendingDeleteCategory: LibraryCategory?
+    @State private var pendingDeleteTag: LibraryTag?
 
     private var chrome: LibraryChrome { LibraryChrome(theme: theme) }
 
@@ -36,6 +38,52 @@ struct LibrarySidebarView: View {
             TextField("标签名称", text: $newTagName)
             Button("创建") { createTag() }
             Button("取消", role: .cancel) {}
+        }
+        .confirmationDialog(
+            "删除目录“\(pendingDeleteCategory?.name ?? "")”？",
+            isPresented: Binding(
+                get: { pendingDeleteCategory != nil },
+                set: { if !$0 { pendingDeleteCategory = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("删除目录", role: .destructive) {
+                if let category = pendingDeleteCategory {
+                    store.deleteCategory(category.id)
+                }
+                pendingDeleteCategory = nil
+            }
+            Button("取消", role: .cancel) { pendingDeleteCategory = nil }
+        } message: {
+            if let category = pendingDeleteCategory {
+                let count = store.documents.filter { $0.categoryID == category.id }.count
+                Text(count > 0
+                    ? "该目录下的 \(count) 篇文档会变为“未分类”，目录本身将被删除。"
+                    : "目录本身将被删除。")
+            }
+        }
+        .confirmationDialog(
+            "删除标签“\(pendingDeleteTag?.name ?? "")”？",
+            isPresented: Binding(
+                get: { pendingDeleteTag != nil },
+                set: { if !$0 { pendingDeleteTag = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("删除标签", role: .destructive) {
+                if let tag = pendingDeleteTag {
+                    store.deleteTag(tag.id)
+                }
+                pendingDeleteTag = nil
+            }
+            Button("取消", role: .cancel) { pendingDeleteTag = nil }
+        } message: {
+            if let tag = pendingDeleteTag {
+                let count = store.documents.filter { $0.tagIDs.contains(tag.id) }.count
+                Text(count > 0
+                    ? "\(count) 篇文档将不再带有该标签，标签本身将被删除。"
+                    : "标签本身将被删除。")
+            }
         }
     }
 
@@ -99,7 +147,7 @@ struct LibrarySidebarView: View {
                 }
                 .contextMenu {
                     Button("重命名") { rename(category) }
-                    Button("删除", role: .destructive) { store.deleteCategory(category.id) }
+                    Button("删除", role: .destructive) { pendingDeleteCategory = category }
                 }
             }
         }
@@ -127,7 +175,7 @@ struct LibrarySidebarView: View {
                 }
                 .contextMenu {
                     Button("重命名") { renameTag(tag) }
-                    Button("删除", role: .destructive) { store.deleteTag(tag.id) }
+                    Button("删除", role: .destructive) { pendingDeleteTag = tag }
                 }
             }
         }

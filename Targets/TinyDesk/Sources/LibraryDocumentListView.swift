@@ -7,6 +7,8 @@ struct LibraryDocumentListView: View {
     @EnvironmentObject private var store: LibraryStore
     @Environment(\.libraryPaperTheme) private var theme
     @State private var sortOrder: SortOrder = .recent
+    @State private var pendingPurge: UUID?
+    @State private var confirmsPurgeAllTrash = false
 
     private var chrome: LibraryChrome { LibraryChrome(theme: theme) }
     enum SortOrder: String, CaseIterable, Identifiable {
@@ -38,6 +40,10 @@ struct LibraryDocumentListView: View {
         VStack(spacing: 0) {
             header
             Divider().overlay(chrome.separator)
+            if hasActiveFilters {
+                filterChips
+                Divider().overlay(chrome.separator)
+            }
             if documents.isEmpty {
                 emptyState
             } else {
@@ -46,6 +52,36 @@ struct LibraryDocumentListView: View {
         }
         .background(PaperBackground(theme: theme, showsOrnament: false))
         .foregroundStyle(chrome.primaryText)
+        .confirmationDialog(
+            "永久删除这篇文档？",
+            isPresented: Binding(
+                get: { pendingPurge != nil },
+                set: { if !$0 { pendingPurge = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("永久删除", role: .destructive) {
+                if let id = pendingPurge {
+                    store.purgeDocument(id)
+                }
+                pendingPurge = nil
+            }
+            Button("取消", role: .cancel) { pendingPurge = nil }
+        } message: {
+            Text("正文文件与全部索引都会被删除，此操作无法撤销。")
+        }
+        .confirmationDialog(
+            "清空回收站？",
+            isPresented: $confirmsPurgeAllTrash,
+            titleVisibility: .visible
+        ) {
+            Button("清空回收站", role: .destructive) {
+                store.purgeAllTrash()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("回收站中的 \(store.trashedDocuments.count) 篇文档将被永久删除，此操作无法撤销。")
+        }
     }
 
     private var header: some View {
@@ -54,7 +90,7 @@ struct LibraryDocumentListView: View {
                 .font(LibraryTypography.title(17))
             if store.viewMode == .trash, !store.trashedDocuments.isEmpty {
                 Button("清空回收站", role: .destructive) {
-                    store.purgeAllTrash()
+                    confirmsPurgeAllTrash = true
                 }
                 .buttonStyle(.plain)
                 .font(.caption)
@@ -107,13 +143,136 @@ struct LibraryDocumentListView: View {
     }
 
     private var emptyState: some View {
+        Group {
+            switch store.searchState {
+            case .searching:
+                emptyView("正在搜索…", systemImage: "magnifyingglass")
+            case .empty, .failed:
+                emptyView(
+                    "没有匹配结果",
+                    systemImage: "magnifyingglass",
+                    description: store.searchState == .failed ? "搜索失败，请重试" : "试试其他关键词",
+                    actionTitle: "清除搜索",
+                    action: { store.search("") }
+                )
+            default:
+                emptyStateByMode
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var emptyStateByMode: some View {
+        switch store.viewMode {
+        case .trash:
+            emptyView("回收站是空的", systemImage: "trash")
+        case .favorites:
+            emptyView("还没有收藏", systemImage: "star", description: "在文档上右键选择收藏")
+        case .recent:
+            emptyView("还没有打开过文档", systemImage: "clock")
+        default:
+            if store.activeCategoryFilter != nil || !store.activeTagFilters.isEmpty {
+                emptyView(
+                    "该筛选下没有文档",
+                    systemImage: "line.3.horizontal.decrease.circle",
+                    actionTitle: "清除筛选",
+                    action: clearFilters
+                )
+            } else {
+                emptyView(
+                    "还没有文档",
+                    systemImage: "doc.richtext",
+                    description: "新建一篇，或从左侧选择其他分类",
+                    actionTitle: "新建文档",
+                    action: { _ = store.createDocument() }
+                )
+            }
+        }
+    }
+
+    private func emptyView(
+        _ title: String,
+        systemImage: String,
+        description: String? = nil,
+        actionTitle: String? = nil,
+        action: (() -> Void)? = nil
+    ) -> some View {
         ContentUnavailableView {
-            Label("没有文档", systemImage: "doc.richtext")
+            Label(title, systemImage: systemImage)
         } description: {
-            Text("新建一篇，或从左侧选择其他分类")
+            if let description {
+                Text(description)
+            }
+        } actions: {
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+            }
         }
         .foregroundStyle(chrome.secondaryText)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// 当前生效的筛选胶囊：目录、标签、搜索词。
+    private var hasActiveFilters: Bool {
+        store.activeCategoryFilter != nil || !store.activeTagFilters.isEmpty || !store.searchQuery.isEmpty
+    }
+
+    private var filterChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                if let categoryID = store.activeCategoryFilter,
+                   let category = store.categories.first(where: { $0.id == categoryID }) {
+                    filterChip(label: "目录：\(category.name)") {
+                        store.activeCategoryFilter = nil
+                    }
+                }
+                ForEach(store.activeTagFilters, id: \.self) { tagID in
+                    if let tag = store.tags.first(where: { $0.id == tagID }) {
+                        filterChip(label: "标签：\(tag.name)") {
+                            store.activeTagFilters.removeAll { $0 == tagID }
+                        }
+                    }
+                }
+                if !store.searchQuery.isEmpty {
+                    filterChip(label: "搜索：\(store.searchQuery)") {
+                        store.search("")
+                    }
+                }
+                if hasActiveFilters {
+                    Button("清除全部", action: clearFilters)
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                        .foregroundStyle(chrome.accent)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+        }
+    }
+
+    private func filterChip(label: String, remove: @escaping () -> Void) -> some View {
+        HStack(spacing: 4) {
+            Text(label)
+                .font(.caption)
+                .lineLimit(1)
+            Button(action: remove) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 10))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(chrome.secondaryText)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(chrome.controlBackground, in: Capsule())
+        .accessibilityLabel("移除\(label)")
+    }
+
+    private func clearFilters() {
+        store.activeCategoryFilter = nil
+        store.activeTagFilters = []
+        store.search("")
     }
 
     private var list: some View {
@@ -124,7 +283,7 @@ struct LibraryDocumentListView: View {
                         document: document,
                         tags: store.tags,
                         isSelected: store.selectedDocumentID == document.id,
-                        isSearching: !store.searchQuery.isEmpty
+                        snippet: snippet(for: document.id)
                     ) {
                         store.selectedDocumentID = document.id
                     }
@@ -137,15 +296,23 @@ struct LibraryDocumentListView: View {
         }
     }
 
+    private func snippet(for documentID: UUID) -> String? {
+        guard store.searchState == .hasResults else { return nil }
+        return store.searchResults.first { $0.documentID == documentID }?.snippet
+    }
+
     @ViewBuilder
     private func contextMenu(for document: LibraryDocument) -> some View {
         if document.isTrashed {
             Button("恢复") { store.restoreDocument(document.id) }
-            Button("永久删除", role: .destructive) { store.purgeDocument(document.id) }
+            Button("永久删除", role: .destructive) { pendingPurge = document.id }
         } else {
             Button("新建文档", systemImage: "doc.badge.plus") { _ = store.createDocument() }
             Button("添加到桌面", systemImage: "desktopcomputer") {
                 addToDesktop(document)
+            }
+            Button("刷新桌面摘要卡", systemImage: "arrow.triangle.2.circlepath") {
+                refreshDeskRef(document)
             }
             Button(document.isFavorited ? "取消收藏" : "收藏", systemImage: "star") {
                 store.toggleFavorite(document.id)
@@ -218,6 +385,23 @@ struct LibraryDocumentListView: View {
             ]
         )
     }
+
+    /// 重新同步桌面摘要卡片（已有卡片则聚焦，缺失则创建）。
+    private func refreshDeskRef(_ document: LibraryDocument) {
+        let tags = document.tagIDs.compactMap { id in
+            store.tags.first(where: { $0.id == id })?.name
+        }
+        NotificationCenter.default.post(
+            name: LibraryDeskCardRequest.notificationName,
+            object: nil,
+            userInfo: [
+                LibraryDeskCardRequest.documentIDKey: document.id,
+                LibraryDeskCardRequest.titleKey: document.title,
+                LibraryDeskCardRequest.summaryKey: document.summary,
+                LibraryDeskCardRequest.tagsKey: tags,
+            ]
+        )
+    }
 }
 
 /// 请求把资料库文档创建为桌面摘要卡片。
@@ -235,7 +419,8 @@ private struct LibraryDocumentRow: View {
     let document: LibraryDocument
     let tags: [LibraryTag]
     let isSelected: Bool
-    let isSearching: Bool
+    /// 搜索命中片段（带 <b> 标记）；非搜索状态为 nil。
+    let snippet: String?
     let action: () -> Void
 
     private var chrome: LibraryChrome { LibraryChrome(theme: theme) }
@@ -264,10 +449,17 @@ private struct LibraryDocumentRow: View {
                                 .background(.secondary.opacity(0.15), in: Capsule())
                         }
                     }
-                    Text(summaryText)
-                        .font(.caption)
-                        .foregroundStyle(chrome.secondaryText)
-                        .lineLimit(1)
+                    if let snippet {
+                        Text(highlightedSnippet(snippet))
+                            .font(.caption)
+                            .foregroundStyle(chrome.secondaryText)
+                            .lineLimit(2)
+                    } else {
+                        Text(summaryText)
+                            .font(.caption)
+                            .foregroundStyle(chrome.secondaryText)
+                            .lineLimit(1)
+                    }
                     HStack(spacing: 4) {
                         ForEach(document.tagIDs.prefix(3), id: \.self) { tagID in
                             if let tag = tags.first(where: { $0.id == tagID }) {
@@ -306,5 +498,23 @@ private struct LibraryDocumentRow: View {
     private var summaryText: String {
         let summary = document.summary.trimmingCharacters(in: .whitespacesAndNewlines)
         return summary.isEmpty ? "空白文档" : summary
+    }
+
+    /// 把 FTS5 snippet 的 <b></b> 高亮转换为 AttributedString 加粗。
+    private func highlightedSnippet(_ raw: String) -> AttributedString {
+        var result = AttributedString()
+        let parts = raw.components(separatedBy: "<b>")
+        for (index, part) in parts.enumerated() {
+            let segments = part.components(separatedBy: "</b>")
+            for (segmentIndex, segment) in segments.enumerated() {
+                var attributed = AttributedString(segment)
+                if index > 0 && segmentIndex == 0 {
+                    attributed.font = .caption.bold()
+                    attributed.foregroundColor = chrome.accent
+                }
+                result += attributed
+            }
+        }
+        return result
     }
 }

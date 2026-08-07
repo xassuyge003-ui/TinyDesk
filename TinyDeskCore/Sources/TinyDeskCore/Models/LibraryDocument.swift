@@ -140,6 +140,8 @@ public struct LibraryDocument: Identifiable, Codable, Sendable, Equatable {
     public var updatedAt: Date
     /// 软删除标记；nil 表示正常，非 nil 表示在回收站中。
     public var deletedAt: Date?
+    /// 最近一次打开时间；“最近打开”视图按此排序，缺失时兼容旧数据。
+    public var lastOpenedAt: Date?
 
     public init(
         id: UUID = UUID(),
@@ -154,7 +156,8 @@ public struct LibraryDocument: Identifiable, Codable, Sendable, Equatable {
         customCoverColorHex: String? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
-        deletedAt: Date? = nil
+        deletedAt: Date? = nil,
+        lastOpenedAt: Date? = nil
     ) {
         self.id = id
         self.title = title
@@ -169,6 +172,7 @@ public struct LibraryDocument: Identifiable, Codable, Sendable, Equatable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.deletedAt = deletedAt
+        self.lastOpenedAt = lastOpenedAt
     }
 
     /// 是否为回收站中的文档。
@@ -177,6 +181,30 @@ public struct LibraryDocument: Identifiable, Codable, Sendable, Equatable {
     /// 汇总文本，用于生成摘要与索引。
     public var indexableText: String {
         [title, summary].filter { !$0.isEmpty }.joined(separator: "\n")
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, categoryID, tagIDs, isFavorited, paperTheme, fontPreset
+        case wordCount, summary, customCoverColorHex, createdAt, updatedAt, deletedAt, lastOpenedAt
+    }
+
+    /// 自定义解码：`lastOpenedAt` 等新字段缺失时保持旧版备份可读。
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        categoryID = try container.decodeIfPresent(UUID.self, forKey: .categoryID)
+        tagIDs = try container.decodeIfPresent([UUID].self, forKey: .tagIDs) ?? []
+        isFavorited = try container.decodeIfPresent(Bool.self, forKey: .isFavorited) ?? false
+        paperTheme = try container.decodeIfPresent(PaperTheme.self, forKey: .paperTheme) ?? .suJian
+        fontPreset = try container.decodeIfPresent(FontPreset.self, forKey: .fontPreset) ?? .fangSong
+        wordCount = try container.decodeIfPresent(Int.self, forKey: .wordCount) ?? 0
+        summary = try container.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        customCoverColorHex = try container.decodeIfPresent(String.self, forKey: .customCoverColorHex)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        deletedAt = try container.decodeIfPresent(Date.self, forKey: .deletedAt)
+        lastOpenedAt = try container.decodeIfPresent(Date.self, forKey: .lastOpenedAt)
     }
 }
 

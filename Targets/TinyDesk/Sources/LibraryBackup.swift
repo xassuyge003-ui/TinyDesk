@@ -82,14 +82,16 @@ struct LibraryBackup {
 
         for document in documents {
             let url = fileManager.fileURL(forDocumentID: document.id)
-            guard let wrapper = try? FileWrapper(url: url, options: []) else { continue }
+            guard let wrapper = try? FileWrapper(url: url, options: []) else {
+                throw LibraryBackupError.missingDocumentFile(document.id)
+            }
             entries.append(contentsOf: archiveEntries(
                 from: wrapper,
                 at: "documents/\(document.id.uuidString).rtfd"
             ))
         }
 
-        return LibraryBackupArchive.create(entries: entries)
+        return try LibraryBackupArchive.create(entries: entries)
     }
 
     /// 从 ZIP 数据恢复资料库。返回恢复的文档列表，由调用方写入数据库。
@@ -105,7 +107,7 @@ struct LibraryBackup {
         fileManager: LibraryFileManager,
         decoder: JSONDecoder
     ) throws -> (bundle: Bundle, documents: [UUID: RestoredBody]) {
-        let entries = LibraryBackupArchive.extract(data)
+        let entries = try LibraryBackupArchive.extract(data)
 
         guard let manifestEntry = entries.first(where: { $0.path == TinyDeskConst.libraryBackupManifestName }),
               let bundleEntry = entries.first(where: { $0.path == TinyDeskConst.libraryBackupDataName })
@@ -119,6 +121,13 @@ struct LibraryBackup {
         }
 
         let bundle = try decoder.decode(Bundle.self, from: bundleEntry.data)
+        guard bundle.documents.count == manifest.documentCount else {
+            throw LibraryBackupError.documentCountMismatch(
+                expected: manifest.documentCount,
+                actual: bundle.documents.count
+            )
+        }
+
         var packageEntries: [UUID: [LibraryBackupArchive.Entry]] = [:]
         var legacyRTF: [UUID: Data] = [:]
 
@@ -152,8 +161,15 @@ struct LibraryBackup {
             RestoredBody(rtfdFileWrapper: nil, legacyRTFData: $0)
         }
         for (id, entries) in packageEntries {
-            guard let wrapper = directoryWrapper(from: entries) else { continue }
+            guard let wrapper = directoryWrapper(from: entries) else {
+                throw LibraryBackupError.invalidPackageStructure(id)
+            }
             documents[id] = RestoredBody(rtfdFileWrapper: wrapper, legacyRTFData: nil)
+        }
+
+        // 备份包声称的文档必须都能找到正文，否则恢复会静默丢数据。
+        for document in bundle.documents where documents[document.id] == nil {
+            throw LibraryBackupError.missingDocumentBody(document.id)
         }
 
         return (bundle, documents)
@@ -226,11 +242,19 @@ struct LibraryBackup {
 enum LibraryBackupError: LocalizedError {
     case invalidArchive
     case unsupportedVersion(Int)
+    case documentCountMismatch(expected: Int, actual: Int)
+    case invalidPackageStructure(UUID)
+    case missingDocumentBody(UUID)
+    case missingDocumentFile(UUID)
 
     var errorDescription: String? {
         switch self {
         case .invalidArchive: return "备份包格式无效。"
         case let .unsupportedVersion(version): return "备份包版本 \(version) 高于当前应用支持的版本。"
+        case let .documentCountMismatch(expected, actual): return "备份包文档数量不一致（清单 \(expected)，元数据 \(actual)）。"
+        case let .invalidPackageStructure(id): return "备份包中的文档正文结构无效（\(id.uuidString)）。"
+        case let .missingDocumentBody(id): return "备份包缺少文档正文（\(id.uuidString)）。"
+        case let .missingDocumentFile(id): return "备份时文档正文文件缺失（\(id.uuidString)）。"
         }
     }
 }

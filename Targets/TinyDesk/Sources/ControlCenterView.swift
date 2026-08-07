@@ -27,6 +27,10 @@ struct ControlCenterView: View {
                         storageBanner(message)
                     }
 
+                    if store.isReadOnly {
+                        readOnlyBanner
+                    }
+
                     addSection
                     cardsSection
                     privacyFooter
@@ -57,6 +61,14 @@ struct ControlCenterView: View {
                 .environmentObject(settings)
                 .environmentObject(calendarService)
         }
+        .onReceive(NotificationCenter.default.publisher(for: LibraryDocumentOpenRequest.notificationName)) { notification in
+            // 控制中心窗口常驻：资料库窗口未打开时也能先开窗，再由
+            // LibraryWindowView.onAppear 消费 pending 文档 ID 完成选中。
+            guard let id = notification.userInfo?[LibraryDocumentOpenRequest.documentIDKey] as? UUID else { return }
+            LibraryOpenCoordinator.pendingDocumentID = id
+            openWindow(id: "library")
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        }
     }
 
     private var hero: some View {
@@ -77,13 +89,13 @@ struct ControlCenterView: View {
             .frame(width: 60, height: 60)
             .shadow(color: .indigo.opacity(0.25), radius: 14, y: 7)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text("TinyDesk")
-                    .font(.system(size: 28, weight: .bold, design: .rounded))
-                Text("可直接编辑的桌面便签、重要日期与待办")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("TinyDesk")
+                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                    Text("可直接编辑的桌面便签、重要日期、待办与资料库")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
 
             Spacer()
 
@@ -108,28 +120,31 @@ struct ControlCenterView: View {
 
     private var addSection: some View {
         VStack(alignment: .leading, spacing: 11) {
-            sectionTitle("新建桌面卡片", subtitle: "可选择小号、中号、大号比例，也可自由缩放")
+            sectionTitle("新建桌面卡片", subtitle: "创建后可调整小号、中号、大号尺寸，也可自由缩放")
 
             HStack(spacing: 12) {
                 AddCardButton(
                     title: "便签",
                     subtitle: "随手记录",
                     symbol: "note.text",
-                    tint: .orange
+                    tint: .orange,
+                    isEnabled: !store.isReadOnly
                 ) { windowManager.createCard(.sticky) }
 
                 AddCardButton(
                     title: "重要日期",
                     subtitle: "生日、节日与纪念日",
                     symbol: "calendar.badge.clock",
-                    tint: .pink
+                    tint: .pink,
+                    isEnabled: !store.isReadOnly
                 ) { windowManager.createCard(.countdown) }
 
                 AddCardButton(
                     title: "待办",
                     subtitle: "跟踪任务",
                     symbol: "checklist",
-                    tint: .green
+                    tint: .green,
+                    isEnabled: !store.isReadOnly
                 ) { windowManager.createCard(.todo) }
             }
         }
@@ -153,6 +168,7 @@ struct ControlCenterView: View {
                         CardManagementTile(
                             card: card,
                             summary: card.summary(importantDates: store.importantDates),
+                            isEnabled: !store.isReadOnly,
                             focus: { windowManager.focus(card.id) },
                             toggleVisibility: {
                                 store.setVisible(!card.isVisible, for: card.id)
@@ -182,13 +198,13 @@ struct ControlCenterView: View {
         HStack(spacing: 9) {
             Image(systemName: "lock.shield.fill")
                 .foregroundStyle(.green)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("完全本地 · 无 App Group · 无付费能力")
-                    .font(.caption.weight(.semibold))
-                Text("便签、日期和待办写入本地 workspace.json；系统日历只在你主动关联后访问。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("完全本地 · 无 App Group · 无付费能力")
+                        .font(.caption.weight(.semibold))
+                    Text("桌面卡片写入本地 workspace.json；资料库使用本地 SQLite 与 RTFD 文件；系统日历只在你主动关联后访问。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             Spacer()
             Button("在 Finder 中显示") {
                 _ = store.persistNow()
@@ -225,6 +241,26 @@ struct ControlCenterView: View {
         .padding(13)
         .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
     }
+
+    /// 高版本工作区的只读横幅：持续可见，不能误以为可以编辑。
+    private var readOnlyBanner: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "lock.fill")
+                .foregroundStyle(.indigo)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("当前工作区只读")
+                    .font(.caption.weight(.semibold))
+                Text("工作区由更高版本创建。为保护数据，本版本禁止修改桌面卡片，请升级 TinyDesk 后继续编辑。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Image(systemName: "lock.shield")
+                .foregroundStyle(.indigo)
+        }
+        .padding(13)
+        .background(.indigo.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+    }
 }
 
 private struct AddCardButton: View {
@@ -232,6 +268,7 @@ private struct AddCardButton: View {
     let subtitle: String
     let symbol: String
     let tint: Color
+    var isEnabled = true
     let action: () -> Void
 
     var body: some View {
@@ -257,12 +294,16 @@ private struct AddCardButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.5)
+        .help(isEnabled ? title : "工作区只读，无法新建卡片")
     }
 }
 
 private struct CardManagementTile: View {
     let card: DesktopCard
     let summary: String
+    var isEnabled = true
     let focus: () -> Void
     let toggleVisibility: () -> Void
     let resize: (DesktopCardSizePreset) -> Void
@@ -309,6 +350,7 @@ private struct CardManagementTile: View {
                 Button(card.isVisible ? "隐藏" : "显示", systemImage: card.isVisible ? "eye.slash" : "eye", action: toggleVisibility)
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                    .disabled(!isEnabled)
                 Spacer()
                 Menu {
                     Menu("卡片尺寸", systemImage: "aspectratio") {
@@ -317,7 +359,7 @@ private struct CardManagementTile: View {
                                 resize(preset)
                             } label: {
                                 Label(
-                                    "\(preset.displayName)  \(preset.dimensions)",
+                                    "\(preset.displayName)  \(preset.dimensions(for: card.kind))",
                                     systemImage: selectedSizePreset == preset ? "checkmark" : preset.symbolName
                                 )
                             }
@@ -362,6 +404,9 @@ private struct CardManagementTile: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
+                .disabled(!isEnabled)
+                .opacity(isEnabled ? 1 : 0.45)
+                .help(isEnabled ? "卡片设置" : "工作区只读，无法修改卡片")
             }
         }
         .padding(14)
@@ -375,7 +420,7 @@ private struct CardManagementTile: View {
     private var selectedSizePreset: DesktopCardSizePreset? {
         guard let frame = card.frame else { return nil }
         let size = NSSize(width: frame.width, height: frame.height)
-        return DesktopCardSizePreset.allCases.first { $0.matches(size) }
+        return DesktopCardSizePreset.allCases.first { $0.matches(size, kind: card.kind) }
     }
 }
 

@@ -20,31 +20,44 @@ final class TinyDeskNotificationDelegate: NSObject, UNUserNotificationCenterDele
 actor ImportantDateNotificationScheduler {
     static let shared = ImportantDateNotificationScheduler()
 
+    /// 一次同步的结果，供 UI 展示失败数量与原因。
+    struct SyncResult {
+        var scheduled = 0
+        var failed = 0
+        var unauthorized = false
+        var failureDetails: [String] = []
+    }
+
     private let identifierPrefix = "tinydesk.important-date."
 
-    func synchronize(events: [ImportantDateEvent], referenceDate: Date = Date()) async {
-        guard !Task.isCancelled else { return }
+    func synchronize(events: [ImportantDateEvent], referenceDate: Date = Date()) async -> SyncResult {
+        var result = SyncResult()
+        guard !Task.isCancelled else { return result }
         let center = UNUserNotificationCenter.current()
-        let existing = await pendingRequests(from: center)
-            .map(\.identifier)
-            .filter { $0.hasPrefix(identifierPrefix) }
-        center.removePendingNotificationRequests(withIdentifiers: existing)
 
         let enabledEvents = events.filter { $0.reminderDaysBefore != nil }
-        guard !enabledEvents.isEmpty else { return }
+        // 没有任何启用提醒的事件时不请求权限，避免首次启动弹出无关授权。
+        guard !enabledEvents.isEmpty else { return result }
 
         var settings = await notificationSettings(from: center)
         if settings.authorizationStatus == .notDetermined {
             _ = try? await center.requestAuthorization(options: [.alert, .sound])
             settings = await notificationSettings(from: center)
         }
+        // 未授权时保留已有请求（可能是用户刚在系统设置中拒绝），
+        // 不删除旧通知，避免“清空后没有新请求”的空状态。
         guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
-            return
+            result.unauthorized = true
+            return result
         }
 
         let calendar = Calendar.current
+        var newIdentifiers = Set<String>()
+
         for event in enabledEvents {
+            guard !Task.isCancelled else { break }
             for scheduled in requests(for: event, referenceDate: referenceDate, calendar: calendar) {
+                newIdentifiers.insert(scheduled.identifier)
                 let content = UNMutableNotificationContent()
                 content.title = event.title
                 content.body = notificationBody(for: event)
@@ -60,9 +73,25 @@ actor ImportantDateNotificationScheduler {
                     content: content,
                     trigger: trigger
                 )
-                try? await center.add(request)
+                do {
+                    try await center.add(request)
+                    result.scheduled += 1
+                } catch {
+                    result.failed += 1
+                    result.failureDetails.append("\(event.title)（\(scheduled.identifier)）：\(error.localizedDescription)")
+                }
             }
         }
+
+        // 相同 identifier 的 add 会替换旧请求；这里只删除本次不再需要的旧请求。
+        let existing = await pendingRequests(from: center)
+            .map(\.identifier)
+            .filter { $0.hasPrefix(identifierPrefix) }
+        let obsolete = existing.filter { !newIdentifiers.contains($0) }
+        if !obsolete.isEmpty {
+            center.removePendingNotificationRequests(withIdentifiers: obsolete)
+        }
+        return result
     }
 
     private func requests(

@@ -22,6 +22,12 @@ enum DesktopCardSizePreset: String, CaseIterable, Identifiable {
         "\(Int(size.width)) × \(Int(size.height))"
     }
 
+    /// 按卡片类型显示实际生效尺寸。
+    func dimensions(for kind: DesktopCardKind) -> String {
+        let target = effectiveSize(for: kind)
+        return "\(Int(target.width)) × \(Int(target.height))"
+    }
+
     var symbolName: String {
         switch self {
         case .small: return "square"
@@ -38,8 +44,19 @@ enum DesktopCardSizePreset: String, CaseIterable, Identifiable {
         }
     }
 
-    func matches(_ size: NSSize) -> Bool {
-        abs(size.width - self.size.width) < 2 && abs(size.height - self.size.height) < 2
+    /// 按卡片类型计算实际生效的预设尺寸（受该类型最小/最大尺寸约束）。
+    func effectiveSize(for kind: DesktopCardKind) -> NSSize {
+        let raw = size
+        let (minimum, maximum) = DesktopWindowManager.sizeLimits(for: kind)
+        return NSSize(
+            width: min(max(raw.width, minimum.width), maximum.width),
+            height: min(max(raw.height, minimum.height), maximum.height)
+        )
+    }
+
+    func matches(_ size: NSSize, kind: DesktopCardKind? = nil) -> Bool {
+        let target = kind.map(effectiveSize(for:)) ?? self.size
+        return abs(size.width - target.width) < 2 && abs(size.height - target.height) < 2
     }
 }
 
@@ -100,6 +117,24 @@ final class DesktopWindowManager: ObservableObject {
             }
             .store(in: &cancellables)
 
+        // 资料库文档变更 → 桌面摘要卡片同步。
+        NotificationCenter.default.publisher(for: LibraryDocumentSyncNotification.notificationName)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self,
+                      let documentID = notification.userInfo?[LibraryDocumentSyncNotification.documentIDKey] as? UUID
+                else { return }
+                self.synchronizeDeskRefCard(
+                    documentID: documentID,
+                    title: notification.userInfo?[LibraryDocumentSyncNotification.titleKey] as? String,
+                    summary: notification.userInfo?[LibraryDocumentSyncNotification.summaryKey] as? String,
+                    tags: notification.userInfo?[LibraryDocumentSyncNotification.tagsKey] as? [String],
+                    status: (notification.userInfo?[LibraryDocumentSyncNotification.statusKey] as? String)
+                        .flatMap(DesktopReferenceStatus.init(rawValue:))
+                )
+            }
+            .store(in: &cancellables)
+
         GlobalShortcutManager.shared.onShortcut = { [weak self] in
             Task { @MainActor in self?.createQuickSticky() }
         }
@@ -115,12 +150,14 @@ final class DesktopWindowManager: ObservableObject {
     }
 
     func createCard(_ kind: DesktopCardKind) {
+        guard !store.isReadOnly else { return }
         let card = store.addCard(kind: kind)
         reconcileWindows()
         focus(card.id)
     }
 
     func createQuickSticky() {
+        guard !store.isReadOnly else { return }
         let screen = screenContainingMouse() ?? NSScreen.main ?? NSScreen.screens.first
         let size = DesktopCardSizePreset.medium.size
         let frame = quickStickyFrame(size: size, screen: screen)
@@ -150,6 +187,7 @@ final class DesktopWindowManager: ObservableObject {
         documentSummary: String,
         documentTags: [String]
     ) {
+        guard !store.isReadOnly else { return }
         // 避免重复添加同一文档。
         if store.cards.contains(where: { $0.kind == .deskRef && $0.referenceDocumentID == documentID }) {
             if let existing = store.cards.first(where: { $0.kind == .deskRef && $0.referenceDocumentID == documentID }) {
@@ -170,13 +208,46 @@ final class DesktopWindowManager: ObservableObject {
         focus(card.id)
     }
 
+    /// 同步资料库文档到桌面摘要卡片：标题、摘要、标签与生命周期状态。
+    private func synchronizeDeskRefCard(
+        documentID: UUID,
+        title: String?,
+        summary: String?,
+        tags: [String]?,
+        status: DesktopReferenceStatus?
+    ) {
+        for card in store.cards where card.kind == .deskRef && card.referenceDocumentID == documentID {
+            let newTitle = title ?? card.referenceDocumentTitle
+            let newSummary = summary ?? card.referenceDocumentSummary
+            let newTags = tags ?? card.referenceDocumentTags
+            let newStatus = status ?? card.referenceDocumentStatus
+            // 值未变化时跳过写入，避免资料库每次保存都触发工作区落盘。
+            guard newTitle != card.referenceDocumentTitle
+                || newSummary != card.referenceDocumentSummary
+                || newTags != card.referenceDocumentTags
+                || newStatus != card.referenceDocumentStatus
+            else { continue }
+            store.updateCard(card.id) {
+                if let newTitle {
+                    $0.title = newTitle
+                    $0.referenceDocumentTitle = newTitle
+                }
+                if let newSummary { $0.referenceDocumentSummary = newSummary }
+                if let newTags { $0.referenceDocumentTags = newTags }
+                $0.referenceDocumentStatus = newStatus
+            }
+        }
+    }
+
     func show(_ id: UUID, focus: Bool = false) {
+        guard !store.isReadOnly else { return }
         store.setVisible(true, for: id)
         reconcileWindows()
         if focus { self.focus(id) }
     }
 
     func hide(_ id: UUID) {
+        guard !store.isReadOnly else { return }
         store.setVisible(false, for: id)
     }
 
@@ -193,6 +264,7 @@ final class DesktopWindowManager: ObservableObject {
     }
 
     func resetPosition(_ id: UUID) {
+        guard !store.isReadOnly else { return }
         guard let card = store.card(withID: id), let panel = panels[id] else { return }
         let frame = defaultFrame(for: card, index: store.cards.firstIndex(where: { $0.id == id }) ?? 0)
         panel.setFrame(frame, display: true, animate: true)
@@ -200,18 +272,22 @@ final class DesktopWindowManager: ObservableObject {
     }
 
     func applySizePreset(_ preset: DesktopCardSizePreset, to id: UUID) {
+        guard !store.isReadOnly else { return }
         guard let card = store.card(withID: id) else { return }
         let panel = panels[id] ?? makePanel(
             for: card,
             index: store.cards.firstIndex(where: { $0.id == id }) ?? 0
         )
 
+        // 预设尺寸必须先经过该卡片类型的最小/最大尺寸约束，
+        // 否则 AppKit 会按 contentMinSize 静默顶高，导致实际尺寸与预设不一致。
+        let targetSize = preset.effectiveSize(for: card.kind)
         let current = panel.frame
         var target = NSRect(
-            x: current.midX - preset.size.width / 2,
-            y: current.midY - preset.size.height / 2,
-            width: preset.size.width,
-            height: preset.size.height
+            x: current.midX - targetSize.width / 2,
+            y: current.midY - targetSize.height / 2,
+            width: targetSize.width,
+            height: targetSize.height
         )
         target = clampedFrame(target, preferredScreenID: panel.screen?.tinyDeskIdentifier)
         panel.setFrame(target, display: true, animate: true)
@@ -219,8 +295,8 @@ final class DesktopWindowManager: ObservableObject {
     }
 
     func selectedSizePreset(for id: UUID) -> DesktopCardSizePreset? {
-        guard let panel = panels[id] else { return nil }
-        return DesktopCardSizePreset.allCases.first { $0.matches(panel.frame.size) }
+        guard let panel = panels[id], let card = store.card(withID: id) else { return nil }
+        return DesktopCardSizePreset.allCases.first { $0.matches(panel.frame.size, kind: card.kind) }
     }
 
     func closePanels() {
@@ -237,6 +313,19 @@ final class DesktopWindowManager: ObservableObject {
             object: nil,
             userInfo: [LibraryDocumentOpenRequest.documentIDKey: documentID]
         )
+    }
+
+    /// 打开重要日期编辑器/系统日历同步界面期间，临时把卡片提升到浮动层，
+    /// 否则 sheet 会继承桌面层级、被普通应用窗口遮挡；关闭后恢复桌面层。
+    func temporarilyRaiseCard(_ id: UUID) {
+        guard let panel = panels[id] else { return }
+        panel.isFloatingPanel = true
+        panel.level = .floating
+    }
+
+    func restoreCardLevel(_ id: UUID) {
+        guard let panel = panels[id], let card = store.card(withID: id) else { return }
+        applyWindowLevel(panel, for: card.id)
     }
 
     fileprivate func panelDidBecomeKey(_ panel: NSWindow, cardID: UUID) {
@@ -276,8 +365,13 @@ final class DesktopWindowManager: ObservableObject {
 
         for (index, card) in store.cards.enumerated() {
             let panel = panels[card.id] ?? makePanel(for: card, index: index)
-            applyPositionLock(card.resolvedIsPositionLocked, to: panel)
+            applyPositionLock(card.resolvedIsPositionLocked || store.isReadOnly, to: panel)
             applyWindowLevel(panel, for: card.id)
+            if store.isReadOnly {
+                panel.styleMask.remove(.resizable)
+            } else if !panel.styleMask.contains(.resizable) {
+                panel.styleMask.insert(.resizable)
+            }
             if card.isVisible {
                 if !panel.isVisible {
                     panel.orderFront(nil)
@@ -318,7 +412,7 @@ final class DesktopWindowManager: ObservableObject {
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
 
-        let limits = sizeLimits(for: card.kind)
+        let limits = Self.sizeLimits(for: card.kind)
         panel.contentMinSize = limits.minimum
         panel.contentMaxSize = limits.maximum
 
@@ -422,7 +516,8 @@ final class DesktopWindowManager: ObservableObject {
     }
 
     private func defaultFrame(for card: DesktopCard, index: Int) -> NSRect {
-        let screen = NSScreen.main ?? NSScreen.screens.first
+        // 优先使用当前操作屏幕（鼠标所在屏幕），多显示器下新建卡片不会落到主屏。
+        let screen = screenContainingMouse() ?? NSScreen.main ?? NSScreen.screens.first
         let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let size: NSSize
         switch card.kind {
@@ -454,7 +549,7 @@ final class DesktopWindowManager: ObservableObject {
         return NSRect(origin: NSPoint(x: x, y: y), size: size)
     }
 
-    private func sizeLimits(for kind: DesktopCardKind) -> (minimum: NSSize, maximum: NSSize) {
+    fileprivate nonisolated static func sizeLimits(for kind: DesktopCardKind) -> (minimum: NSSize, maximum: NSSize) {
         switch kind {
         case .sticky:
             return (NSSize(width: 220, height: 170), NSSize(width: 760, height: 680))

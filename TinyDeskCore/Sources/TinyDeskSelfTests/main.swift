@@ -171,9 +171,183 @@ if let leapDate = (0..<366)
     let fallbackOccurrence = fallbackLeapBirthday.occurrence(inYear: 2026, calendar: calendar)
     check(strictOccurrence == nil, "没有对应闰月时严格规则不会错误补过")
     check(fallbackOccurrence != nil, "没有对应闰月时默认规则按普通月补过")
+
+    // 严格闰月事件必须能找到超过两年的下一次闰月（农历闰月间隔可达 3~19 年）。
+    let leapYear = calendar.component(.year, from: leapDate)
+    let reference = date(leapYear + 1, 1, 1)
+    let nextLeap = strictLeapBirthday.relevantOccurrence(from: reference, calendar: calendar)
+    check(nextLeap != nil, "严格闰月事件在超过两年后仍能找到下次闰月")
+    if let nextLeap {
+        check(nextLeap > reference, "找到的下次闰月晚于参考日期")
+        let nextComponents = ChineseLunarCalendar.components(from: nextLeap, calendar: calendar)
+        check(
+            nextComponents.month == leapComponents.month
+                && nextComponents.day == leapComponents.day
+                && nextComponents.isLeapMonth,
+            "找到的下次闰月与事件月份一致"
+        )
+    }
 } else {
     check(false, "测试年份应包含至少一个闰月")
 }
+
+print("Lunar calendar boundaries")
+// 腊月跨公历年：农历 2025 腊月初一落在公历 2026 年 1 月，
+// 必须在“所属公历年”窗口内被正确识别，而不是命中错误的年份。
+if let laYue1 = ChineseLunarCalendar.occurrence(
+    inLunarYear: 2025,
+    month: 12,
+    day: 1,
+    isLeapMonth: false,
+    leapMonthPolicy: .regularMonthFallback,
+    calendar: calendar
+) {
+    let laYueYear = calendar.component(.year, from: laYue1)
+    check(
+        ChineseLunarCalendar.occurrence(
+            inGregorianYear: laYueYear,
+            month: 12,
+            day: 1,
+            isLeapMonth: false,
+            leapMonthPolicy: .regularMonthFallback,
+            calendar: calendar
+        ) == laYue1,
+        "腊月初一在所属公历年窗口内正确识别"
+    )
+    check(
+        ChineseLunarCalendar.occurrence(
+            inGregorianYear: laYueYear,
+            month: 12,
+            day: 2,
+            isLeapMonth: false,
+            leapMonthPolicy: .regularMonthFallback,
+            calendar: calendar
+        ) != nil,
+        "腊月初二在窗口内可识别"
+    )
+} else {
+    check(false, "农历 2025 年应有腊月")
+}
+// 上一农历年的腊月（公历 2025 年 1 月）必须归属公历 2025，而不是被 2026 借用。
+if let previousLaYue1 = ChineseLunarCalendar.occurrence(
+    inLunarYear: 2024,
+    month: 12,
+    day: 1,
+    isLeapMonth: false,
+    leapMonthPolicy: .regularMonthFallback,
+    calendar: calendar
+) {
+    let previousYear = calendar.component(.year, from: previousLaYue1)
+    check(
+        ChineseLunarCalendar.occurrence(
+            inGregorianYear: previousYear,
+            month: 12,
+            day: 1,
+            isLeapMonth: false,
+            leapMonthPolicy: .regularMonthFallback,
+            calendar: calendar
+        ) != nil,
+        "跨年腊月初一在其公历年内仍有发生日"
+    )
+
+    // 腊月可能同时出现在同一年年初（上一农历年）与年末（本农历年），
+    // 两者都必须被识别为该农历事件的发生日。
+    let laYueEvent = ImportantDateEvent(
+        title: "腊月生日",
+        date: ImportantDateComponents(calendarSystem: .chineseLunar, month: 12, day: 1),
+        recurrence: .yearly,
+        createdAt: now,
+        updatedAt: now
+    )
+    check(
+        laYueEvent.occurs(on: previousLaYue1, calendar: calendar),
+        "本农历年腊月初一在所属公历日显示"
+    )
+    if let earlierLaYue1 = ChineseLunarCalendar.occurrence(
+        inLunarYear: 2023,
+        month: 12,
+        day: 1,
+        isLeapMonth: false,
+        leapMonthPolicy: .regularMonthFallback,
+        calendar: calendar
+    ) {
+        check(
+            laYueEvent.occurs(on: earlierLaYue1, calendar: calendar),
+            "同公历年内另一农历年的腊月初一也显示"
+        )
+    }
+}
+// 冬月三十跨年（含小月回退）：公历年窗口结果必须与农历年窗口一致。
+let dongYue30Gregorian = ChineseLunarCalendar.occurrence(
+    inGregorianYear: 2026,
+    month: 11,
+    day: 30,
+    isLeapMonth: false,
+    leapMonthPolicy: .regularMonthFallback,
+    calendar: calendar
+)
+let dongYue30Lunar = ChineseLunarCalendar.occurrence(
+    inLunarYear: 2025,
+    month: 11,
+    day: 30,
+    isLeapMonth: false,
+    leapMonthPolicy: .regularMonthFallback,
+    calendar: calendar
+)
+check(dongYue30Gregorian == dongYue30Lunar, "冬月三十跨年边界与农历年窗口一致")
+check(dongYue30Lunar != nil, "农历 2025 冬月存在")
+// 冬月三十落在次年 1 月时，前一个公历年窗口内必须为空（旧实现会错误回退到 12 月末）。
+if let dongYue30Lunar,
+   calendar.component(.year, from: dongYue30Lunar) == 2026 {
+    check(
+        ChineseLunarCalendar.occurrence(
+            inGregorianYear: 2025,
+            month: 11,
+            day: 30,
+            isLeapMonth: false,
+            leapMonthPolicy: .regularMonthFallback,
+            calendar: calendar
+        ) == nil,
+        "冬月三十不在前一个公历年时不会错误回退到窗口末日"
+    )
+}
+
+print("Non-Gregorian calendars")
+var buddhist = Calendar(identifier: .buddhist)
+buddhist.timeZone = calendar.timeZone
+let buddhistEvent = ImportantDateEvent(
+    title: "佛历环境事件",
+    date: ImportantDateComponents(year: 2026, month: 4, day: 5),
+    recurrence: .once,
+    createdAt: now,
+    updatedAt: now
+)
+check(
+    buddhistEvent.storedOccurrence(calendar: buddhist) == date(2026, 4, 5),
+    "佛历环境下次发生日仍使用公历绝对年"
+)
+let extractedComponents = ImportantDateComponents(
+    gregorianDate: date(2026, 4, 5),
+    calendar: buddhist
+)
+check(
+    extractedComponents.year == 2026 && extractedComponents.month == 4 && extractedComponents.day == 5,
+    "佛历环境提取公历年月日不会变成纪年"
+)
+var japanese = Calendar(identifier: .japanese)
+japanese.timeZone = calendar.timeZone
+let japaneseLeapDay = ImportantDateEvent(
+    title: "和历闰日",
+    date: ImportantDateComponents(year: nil, month: 2, day: 29),
+    recurrence: .yearly,
+    leapDayPolicy: .february28,
+    createdAt: now,
+    updatedAt: now
+)
+check(
+    japaneseLeapDay.occurrence(inYear: 2025, calendar: japanese) == date(2025, 2, 28),
+    "和历环境闰日回退仍按公历年计算"
+)
 
 let oneTime = ImportantDateEvent(
     title: "一次事件",
@@ -189,7 +363,10 @@ check(!oneTime.occurs(on: date(2027, 4, 5), calendar: calendar), "一次事件�
 
 print("Todo")
 var todo = DesktopCard.todo(now: now, calendar: calendar)
-check(todo.todoItems.first?.scheduledDayOffset(from: now, calendar: calendar) == 0, "新待办默认计划为今天")
+check(todo.todoItems.isEmpty, "新建待办卡片从空列表开始（不写入教学示例）")
+check(todo.completedTodoCount == 0 && todo.pendingTodoCount == 0, "空待办进度为 0/0")
+let freshItem = TinyDeskTodoItem(title: "新事项", createdAt: now)
+check(freshItem.scheduledDayOffset(from: now, calendar: calendar) == 0, "新待办默认计划为今天")
 
 let yesterday = calendar.date(byAdding: .day, value: -1, to: today)!
 let threeDaysEarlier = calendar.date(byAdding: .day, value: -3, to: today)!
@@ -428,6 +605,46 @@ do {
     check(titleSearch.count == 1, "标题可被搜索")
     let categorySearch = try indexer.searchIDs(query: "工作")
     check(categorySearch.count == 1, "目录名可被搜索")
+
+    // rowid 稳定性：UPSERT 更新元数据不得改变 documents rowid，
+    // 否则 FTS 正文索引会丢失、旧 rowid 产生孤儿行。
+    let rowIDBefore = try indexer.fetchRowID(forDocumentID: docA.id)
+    var favoritedDoc = docA
+    favoritedDoc.isFavorited = true
+    try indexer.insertDocument(favoritedDoc)
+    try indexer.index(
+        documentID: docA.id,
+        title: docA.title,
+        body: "春天桃花盛开，燕子从南方归来。",
+        tags: ["重要", "随笔"],
+        category: "工作"
+    )
+    let rowIDAfter = try indexer.fetchRowID(forDocumentID: docA.id)
+    check(rowIDBefore == rowIDAfter, "元数据更新后 documents rowid 保持不变")
+    let searchAfterMetadataUpdate = try indexer.searchIDs(query: "桃花")
+    check(
+        searchAfterMetadataUpdate == (rowIDAfter.map { [$0] } ?? []),
+        "元数据更新后正文搜索仍命中且无重复"
+    )
+    let tagSearchAfterUpdate = try indexer.searchIDs(query: "随笔")
+    check(tagSearchAfterUpdate.count == 2, "元数据更新后标签搜索仍命中")
+
+    // 删除文档后正文不得残留命中。
+    try indexer.deleteDocument(docA.id)
+    let searchAfterDelete = try indexer.searchIDs(query: "桃花")
+    check(searchAfterDelete.isEmpty, "删除文档后正文不再命中")
+
+    // 纯标点/空词条搜索不得抛 SQL 语法错误。
+    let emptySearch = try indexer.searchIDs(query: "！？……")
+    check(emptySearch.isEmpty, "纯标点搜索返回空结果")
+    let whitespaceSearch = try indexer.searchIDs(query: "   ")
+    check(whitespaceSearch.isEmpty, "空白搜索返回空结果")
+    let joinSearch = try indexer.search(query: "随笔")
+    check(joinSearch.contains { $0.documentID == docB.id }, "JOIN 搜索返回正确文档 ID")
+
+    // 孤儿 FTS 清理：当前操作序列不应产生孤儿行。
+    let orphanedCount = try indexer.purgeOrphanedFTSRows()
+    check(orphanedCount == 0, "正常操作序列不产生孤儿 FTS 行")
 
     // 软删除
     var trashedDoc = docA

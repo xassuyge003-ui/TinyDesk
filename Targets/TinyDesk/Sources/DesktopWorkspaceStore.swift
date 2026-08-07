@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 import TinyDeskCore
@@ -6,6 +7,8 @@ import TinyDeskCore
 final class DesktopWorkspaceStore: ObservableObject {
     @Published private(set) var workspace: TinyDeskWorkspace
     @Published private(set) var storageMessage: String?
+    /// 工作区由更高版本创建时进入只读模式：保留原文件与内存数据，禁止写回。
+    private(set) var isReadOnly = false
 
     let fileURL: URL
 
@@ -23,7 +26,13 @@ final class DesktopWorkspaceStore: ObservableObject {
                 decoder.dateDecodingStrategy = .iso8601
                 let decoded = try decoder.decode(TinyDeskWorkspace.self, from: data)
                 guard decoded.schemaVersion <= TinyDeskWorkspace.currentSchemaVersion else {
-                    throw WorkspaceStorageError.unsupportedSchema(decoded.schemaVersion)
+                    // 高版本文件可能完全有效，不能当作损坏文件备份或重建。
+                    // 保留原文件并进入只读展示模式，提示升级应用。
+                    isReadOnly = true
+                    workspace = decoded
+                    storageMessage = "工作区由更高版本（schema \(decoded.schemaVersion)）创建。为保护数据，当前版本只读显示，请升级 TinyDesk 后再编辑。"
+                    refreshImportantDateNotifications()
+                    return
                 }
                 let migrated = decoded.migratedToCurrentSchema()
                 workspace = migrated
@@ -48,6 +57,17 @@ final class DesktopWorkspaceStore: ObservableObject {
         }
 
         refreshImportantDateNotifications()
+
+        // 所有退出路径（菜单、AppleScript、系统终止等）最终落盘。
+        // 注册在 store 自身，避免依赖 App.init 中被 SwiftUI 丢弃的实例；
+        // queue 必须为 nil（block 指定 queue 是异步派发，终止时不会执行）。
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            _ = self?.persistNow()
+        }
     }
 
     var cards: [DesktopCard] { workspace.cards }
@@ -157,17 +177,21 @@ final class DesktopWorkspaceStore: ObservableObject {
         return newEvents.count
     }
 
+    /// 导出到系统日历；成功返回 true，失败返回 false 并设置存储提示。
+    @discardableResult
     func exportImportantDate(
         _ id: UUID,
         to calendarIdentifier: String,
         using service: SystemCalendarService
-    ) {
-        guard let event = workspace.importantDates.first(where: { $0.id == id }) else { return }
+    ) -> Bool {
+        guard let event = workspace.importantDates.first(where: { $0.id == id }) else { return false }
         do {
             let updated = try service.export(event, to: calendarIdentifier)
             updateImportantDate(id) { $0 = updated }
+            return true
         } catch {
             storageMessage = "无法关联系统日历：\(error.localizedDescription)"
+            return false
         }
     }
 
@@ -251,6 +275,7 @@ final class DesktopWorkspaceStore: ObservableObject {
 
     @discardableResult
     func persistNow() -> Bool {
+        guard !isReadOnly else { return true }
         pendingSave?.cancel()
         pendingSave = nil
         do {
@@ -263,6 +288,7 @@ final class DesktopWorkspaceStore: ObservableObject {
     }
 
     private func scheduleSave(after delay: TimeInterval = 0.25) {
+        guard !isReadOnly else { return }
         pendingSave?.cancel()
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
@@ -273,12 +299,16 @@ final class DesktopWorkspaceStore: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
-    private func refreshImportantDateNotifications() {
+    /// 重新调度所有重要日期提醒（权限恢复、应用激活时调用）。
+    func refreshImportantDateNotifications() {
         let events = workspace.importantDates
         notificationTask?.cancel()
         notificationTask = Task {
             guard !Task.isCancelled else { return }
-            await ImportantDateNotificationScheduler.shared.synchronize(events: events)
+            let result = await ImportantDateNotificationScheduler.shared.synchronize(events: events)
+            guard !Task.isCancelled, result.failed > 0 else { return }
+            let firstDetail = result.failureDetails.first ?? "系统拒绝了部分请求"
+            storageMessage = "有 \(result.failed) 条提醒未能安排：\(firstDetail)"
         }
     }
 
@@ -305,26 +335,16 @@ final class DesktopWorkspaceStore: ObservableObject {
     private static func backupCorruptedFile(at url: URL, error loadError: Error) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let suffix = UUID().uuidString.prefix(8)
         let backup = url
             .deletingPathExtension()
-            .appendingPathExtension("corrupt-\(formatter.string(from: Date())).json")
+            .appendingPathExtension("corrupt-\(formatter.string(from: Date()))-\(suffix).json")
 
         do {
             try FileManager.default.moveItem(at: url, to: backup)
             return "工作区无法读取，已备份为 \(backup.lastPathComponent)，并创建了新的本地工作区。"
         } catch {
             return "工作区无法读取（\(loadError.localizedDescription)），备份也失败：\(error.localizedDescription)"
-        }
-    }
-}
-
-private enum WorkspaceStorageError: LocalizedError {
-    case unsupportedSchema(Int)
-
-    var errorDescription: String? {
-        switch self {
-        case let .unsupportedSchema(version):
-            return "工作区版本 \(version) 高于当前应用支持的版本。"
         }
     }
 }

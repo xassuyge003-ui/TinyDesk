@@ -23,7 +23,10 @@ enum LibraryBackupArchive {
 
     // MARK: - 写入
 
-    static func create(entries: [Entry]) -> Data {
+    static func create(entries: [Entry]) throws -> Data {
+        guard entries.count <= UInt16.max else {
+            throw LibraryBackupArchiveError.entryCountOverflow
+        }
         var output = Data()
         var centralDirectory = Data()
         var offset: UInt32 = 0
@@ -33,6 +36,12 @@ enum LibraryBackupArchive {
         for entry in entries {
             let name = Array(entry.path.utf8)
             let fileData = entry.isDirectory ? Data() : entry.data
+            guard name.count <= UInt16.max else {
+                throw LibraryBackupArchiveError.nameTooLong(entry.path)
+            }
+            guard fileData.count <= UInt32.max, name.count <= UInt32.max else {
+                throw LibraryBackupArchiveError.dataTooLarge(entry.path)
+            }
             let crc = crc32(of: entry.data)
 
             var local = Data()
@@ -92,44 +101,63 @@ enum LibraryBackupArchive {
 
     // MARK: - 读取
 
-    static func extract(_ data: Data) -> [Entry] {
-        var entries: [Entry] = []
-
-        guard let end = locateEndOfCentralDirectory(in: data) else { return [] }
+    static func extract(_ data: Data) throws -> [Entry] {
+        guard let end = locateEndOfCentralDirectory(in: data) else {
+            throw LibraryBackupArchiveError.eocdNotFound
+        }
         let recordCount = Int(end.readUInt16(at: 10))
         var cursor = Int(end.readUInt32(at: 16))
+        var entries: [Entry] = []
 
         for _ in 0..<recordCount {
             guard cursor + 46 <= data.count,
-                  data.readUInt32(at: cursor) == 0x02014b50 else { return entries }
+                  data.readUInt32(at: cursor) == 0x02014b50
+            else {
+                throw LibraryBackupArchiveError.invalidCentralDirectory
+            }
 
+            let flags = data.readUInt16(at: cursor + 8)
             let method = data.readUInt16(at: cursor + 10)
             let compressedSize = Int(data.readUInt32(at: cursor + 20))
             let uncompressedSize = Int(data.readUInt32(at: cursor + 24))
             let nameLength = Int(data.readUInt16(at: cursor + 28))
             let extraLength = Int(data.readUInt16(at: cursor + 30))
             let commentLength = Int(data.readUInt16(at: cursor + 32))
+            let crcCentral = data.readUInt32(at: cursor + 16)
             let localOffset = Int(data.readUInt32(at: cursor + 42))
+
+            if flags & 0x1 != 0 {
+                throw LibraryBackupArchiveError.encryptedUnsupported
+            }
+            if compressedSize == 0xFFFFFFFF || uncompressedSize == 0xFFFFFFFF || localOffset == 0xFFFFFFFF {
+                throw LibraryBackupArchiveError.zip64Unsupported
+            }
 
             let nameStart = cursor + 46
             let nameEnd = nameStart + nameLength
-            guard nameEnd <= data.count else { return entries }
+            guard nameEnd <= data.count else {
+                throw LibraryBackupArchiveError.truncated
+            }
             let name = String(decoding: data[nameStart..<nameEnd], as: UTF8.self)
-
             let isDirectory = name.hasSuffix("/")
 
-            if let fileData = readFileData(
+            guard let fileData = try readFileData(
                 in: data,
                 localOffset: localOffset,
+                flags: flags,
                 method: method,
                 compressedSize: compressedSize,
-                uncompressedSize: uncompressedSize,
-                nameLength: nameLength
-            ) {
-                let entry = Entry(path: name, data: fileData, isDirectory: isDirectory)
-                entries.append(entry)
+                uncompressedSize: uncompressedSize
+            ) else {
+                throw LibraryBackupArchiveError.truncated
             }
 
+            let calculated = crc32(of: fileData)
+            guard calculated == crcCentral else {
+                throw LibraryBackupArchiveError.crcMismatch(path: name)
+            }
+
+            entries.append(Entry(path: name, data: fileData, isDirectory: isDirectory))
             cursor += 46 + nameLength + extraLength + commentLength
         }
         return entries
@@ -138,30 +166,43 @@ enum LibraryBackupArchive {
     private static func readFileData(
         in data: Data,
         localOffset: Int,
+        flags: UInt16,
         method: UInt16,
         compressedSize: Int,
-        uncompressedSize: Int,
-        nameLength: Int
-    ) -> Data? {
-        guard localOffset + 30 + nameLength + compressedSize <= data.count else { return nil }
-        let fileStart = localOffset + 30 + nameLength
-        let fileData = data.subdata(in: fileStart..<(fileStart + compressedSize))
+        uncompressedSize: Int
+    ) throws -> Data? {
+        guard localOffset + 30 <= data.count else { return nil }
+        guard data.readUInt32(at: localOffset) == 0x04034b50 else {
+            throw LibraryBackupArchiveError.invalidLocalHeader
+        }
+        let localFlags = data.readUInt16(at: localOffset + 6)
+        if localFlags & 0x1 != 0 {
+            throw LibraryBackupArchiveError.encryptedUnsupported
+        }
+        // data descriptor 位（bit 3）不影响正文起点：正文偏移只依赖文件名与 extra field。
+        _ = flags
+        let localNameLength = Int(data.readUInt16(at: localOffset + 26))
+        let localExtraLength = Int(data.readUInt16(at: localOffset + 28))
+        let fileStart = localOffset + 30 + localNameLength + localExtraLength
+        guard fileStart + compressedSize <= data.count else { return nil }
 
         switch method {
         case 0:
-            return fileData
+            guard compressedSize == uncompressedSize else {
+                throw LibraryBackupArchiveError.crcMismatch(path: "")
+            }
+            return data.subdata(in: fileStart..<(fileStart + compressedSize))
         default:
-            // 仅支持 stored；外部压缩的归档交给系统工具处理。
-            return nil
+            throw LibraryBackupArchiveError.unsupportedMethod(method)
         }
     }
 
     private static func locateEndOfCentralDirectory(in data: Data) -> Data? {
         let minimum = 22
         guard data.count >= minimum else { return nil }
-        // suffix 返回的 SubSequence 保留原 startIndex，偏移计算会出错；
-        // 转成新的 Data 以 0 为起点。
-        let window = Data(data.suffix(min(1024, data.count)))
+        // EOCD 前可携带最多 65535 字节注释，扫描窗口要覆盖完整范围。
+        let windowSize = min(65535 + minimum, data.count)
+        let window = Data(data.suffix(windowSize))
         for index in stride(from: window.count - minimum, through: 0, by: -1) {
             if window.readUInt32(at: index) == 0x06054b50 {
                 return window.subdata(in: index..<window.count)
@@ -249,5 +290,36 @@ private extension Data {
             (UInt32(self[startIndex.advanced(by: offset + 1)]) << 8) |
             (UInt32(self[startIndex.advanced(by: offset + 2)]) << 16) |
             (UInt32(self[startIndex.advanced(by: offset + 3)]) << 24)
+    }
+}
+
+/// ZIP 归档读写错误。
+enum LibraryBackupArchiveError: LocalizedError {
+    case eocdNotFound
+    case invalidCentralDirectory
+    case invalidLocalHeader
+    case truncated
+    case crcMismatch(path: String)
+    case unsupportedMethod(UInt16)
+    case encryptedUnsupported
+    case zip64Unsupported
+    case entryCountOverflow
+    case nameTooLong(String)
+    case dataTooLarge(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .eocdNotFound: return "备份包缺少 ZIP 结束标记。"
+        case .invalidCentralDirectory: return "备份包中央目录损坏。"
+        case .invalidLocalHeader: return "备份包文件头损坏。"
+        case .truncated: return "备份包内容被截断。"
+        case let .crcMismatch(path): return "备份包校验失败（\(path.isEmpty ? "未知文件" : path)）。"
+        case let .unsupportedMethod(method): return "备份包使用了不支持的压缩方式（\(method)）。"
+        case .encryptedUnsupported: return "备份包包含加密条目，无法读取。"
+        case .zip64Unsupported: return "备份包使用 ZIP64 扩展，当前版本无法读取。"
+        case .entryCountOverflow: return "备份包条目过多，无法生成。"
+        case let .nameTooLong(path): return "备份条目文件名过长（\(path)）。"
+        case let .dataTooLarge(path): return "备份条目数据过大（\(path)）。"
+        }
     }
 }

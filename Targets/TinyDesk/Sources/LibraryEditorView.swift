@@ -54,6 +54,7 @@ private struct LibraryEditorContent: View {
     @State private var draftTitle: String
     @State private var pendingBodySave: Task<Void, Never>?
     @State private var pendingBody: BodySave?
+    @State private var pendingTitleWork: DispatchWorkItem?
 
     let document: LibraryDocument
 
@@ -92,6 +93,12 @@ private struct LibraryEditorContent: View {
         }
         .onDisappear {
             flushPendingBodySave()
+            flushPendingTitleSave()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: LibraryExportWillBeginNotification.name)) { _ in
+            // 导出/备份前同步保存未落盘的标题与正文。
+            flushPendingTitleSave()
+            flushPendingBodySave()
         }
     }
 
@@ -125,7 +132,7 @@ private struct LibraryEditorContent: View {
                 .foregroundStyle(style.textColorSwiftUI)
                 .onSubmit { commitTitle() }
                 .onChange(of: draftTitle) { _, newValue in
-                    commitTitle(newValue)
+                    scheduleTitleCommit(newValue)
                 }
             Spacer()
             Menu {
@@ -195,7 +202,7 @@ private struct LibraryEditorContent: View {
 
     private var statusBar: some View {
         HStack(spacing: 8) {
-            Text("\(document.paperTheme.displayName) · 本地保存")
+            Text("\(document.paperTheme.displayName) · \(saveStatusText)")
                 .font(.caption)
                 .foregroundStyle(style.accentColorSwiftUI)
             Spacer()
@@ -211,6 +218,11 @@ private struct LibraryEditorContent: View {
         .background(PaperBackground(theme: document.paperTheme, showsOrnament: false))
     }
 
+    /// 保存状态：有未落盘内容时显示“保存中”，否则“已保存”。
+    private var saveStatusText: String {
+        pendingBody != nil || pendingTitleWork != nil ? "保存中…" : "已保存"
+    }
+
     private var initialBodyText: String {
         // 首次渲染用空文本占位，避免闪动；真实内容在 onAppear 读取。
         ""
@@ -223,14 +235,36 @@ private struct LibraryEditorContent: View {
     private func commitTitle(_ value: String = "") {
         let resolved = value.isEmpty ? draftTitle : value
         let trimmed = resolved.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != document.title else { return }
+        // 空标题统一回退为“未命名文档”，保证输入框、列表与持久化一致。
+        let finalTitle = trimmed.isEmpty ? "未命名文档" : trimmed
+        guard finalTitle != document.title else { return }
         store.updateMetadata(document.id) { doc in
-            doc.title = trimmed
+            doc.title = finalTitle
+        }
+        if trimmed.isEmpty {
+            draftTitle = finalTitle
         }
     }
 
+    /// 标题输入防抖：避免每个字符都触发 SQLite 写入与全树刷新。
+    private func scheduleTitleCommit(_ value: String) {
+        pendingTitleWork?.cancel()
+        let work = DispatchWorkItem { [self] in
+            self.pendingTitleWork = nil
+            self.commitTitle(value)
+        }
+        pendingTitleWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+    }
+
+    private func flushPendingTitleSave() {
+        pendingTitleWork?.cancel()
+        pendingTitleWork = nil
+        commitTitle(draftTitle)
+    }
+
     private func loadBody() {
-        guard let attributed = store.loadAttributedString(for: document) else {
+        guard let attributed = store.loadAttributedStringOrReport(for: document.id) else {
             return
         }
         editorController.present(
@@ -269,7 +303,10 @@ private struct LibraryEditorContent: View {
                 data: data,
                 options: [.documentType: NSAttributedString.DocumentType.rtf],
                 documentAttributes: nil
-            ) else { return }
+            ) else {
+                store.report("正文保存失败：富文本数据无法解码。")
+                return
+            }
             attributed = decoded
         } else {
             attributed = NSAttributedString(string: "")
